@@ -1,0 +1,6 @@
+target build {
+  steps { exec ["go", "build"] }
+}
+target build {
+  steps { exec ["go", "test"] }
+}

@@ -14,6 +14,7 @@ bake [global-flags] [target | suite] [target-args] [--] [passthrough]
 | `--ci` | Use CI suite for `--list`. |
 | `--dry-run` | Print commands and dependency order; do not run. |
 | `--explain <target>` | Show dependency chain, args, and resolved steps for a target. |
+| `--why <target>` | Explain why the target would run or be skipped (incremental build: changed inputs, missing outputs, cache hit). |
 | `--debug` | Enable debug logging (or set `BAKE_DEBUG=1`). |
 
 ## Commands

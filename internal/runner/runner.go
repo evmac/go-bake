@@ -2,11 +2,14 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 
+	"github.com/evmac/go-bake/internal/cache"
 	"github.com/evmac/go-bake/internal/config"
 	"github.com/evmac/go-bake/internal/env"
 	"github.com/evmac/go-bake/internal/resolve"
@@ -23,6 +26,7 @@ type RunOptions struct {
 }
 
 // Run builds the DAG, runs dependencies in order, then runs the target's steps.
+// Targets with inputs/outputs use the incremental cache and may be skipped when up to date.
 func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptions) error {
 	tgt := cfg.TargetByName(targetName)
 	if tgt == nil {
@@ -45,11 +49,101 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 			continue
 		}
 		depOpts := RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env}
-		if err := runTargetSteps(ctx, dep, opts.RootDir, dotenvMap, depOpts); err != nil {
+		if err := runTargetWithCache(ctx, dep, opts.RootDir, dotenvMap, depOpts); err != nil {
 			return fmt.Errorf("dep %q: %w", name, err)
 		}
 	}
-	return runTargetSteps(ctx, tgt, opts.RootDir, dotenvMap, opts)
+	return runTargetWithCache(ctx, tgt, opts.RootDir, dotenvMap, opts)
+}
+
+// runTargetWithCache runs the target, skipping if incremental cache says up to date.
+func runTargetWithCache(ctx context.Context, tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) error {
+	if len(tgt.Inputs) == 0 || len(tgt.Outputs) == 0 {
+		return runTargetSteps(ctx, tgt, rootDir, dotenvMap, opts)
+	}
+	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
+	expandedInputs, _ := resolve.ExpandArgv(append([]string{}, tgt.Inputs...), data)
+	expandedOutputs, _ := resolve.ExpandArgv(append([]string{}, tgt.Outputs...), data)
+	inputFiles, err := cache.ResolveGlobs(rootDir, expandedInputs)
+	if err != nil {
+		return err
+	}
+	outputPaths, err := cache.ResolveGlobs(rootDir, expandedOutputs)
+	if err != nil {
+		return err
+	}
+	inputHash, inputHashesMap, err := cache.HashFilesMap(rootDir, inputFiles)
+	if err != nil {
+		return err
+	}
+	stepSig := stepSignature(tgt, rootDir, dotenvMap, opts)
+	key := cache.Key(tgt.Name, inputHash, stepSig)
+	manifest, err := cache.LoadManifest(rootDir, key)
+	if err != nil {
+		return err
+	}
+	inputHashHex := fmt.Sprintf("%x", inputHash)
+	if manifest != nil && manifest.InputHash == inputHashHex {
+		ok, _ := cache.OutputsExist(rootDir, manifest.OutputPaths)
+		if ok {
+			return nil
+		}
+	}
+	if err := runTargetSteps(ctx, tgt, rootDir, dotenvMap, opts); err != nil {
+		return err
+	}
+	outputPaths, _ = cache.ResolveGlobs(rootDir, expandedOutputs)
+	mtimes, _ := cache.RecordOutputMTimes(rootDir, outputPaths)
+	return cache.SaveManifest(rootDir, key, &cache.Manifest{
+		TargetName:   tgt.Name,
+		InputHash:    inputHashHex,
+		InputHashes:  inputHashesMap,
+		OutputPaths:  outputPaths,
+		OutputMTimes: mtimes,
+	})
+}
+
+// stepSignature returns a hash of the target's expanded steps (argv + env) for cache keying.
+func stepSignature(tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) []byte {
+	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
+	mergedEnv := env.Merge(os.Environ(), dotenvMap, tgt.Env)
+	if len(data) > 0 && len(tgt.Env) > 0 {
+		exp, _ := resolve.ExpandEnv(tgt.Env, data)
+		mergedEnv = env.Merge(os.Environ(), dotenvMap, exp)
+	}
+	h := sha256.New()
+	for i, step := range tgt.Steps {
+		argv := append([]string{}, step.Argv...)
+		if len(data) > 0 {
+			argv, _ = resolve.ExpandArgv(argv, data)
+		}
+		h.Write([]byte(fmt.Sprintf("step:%d", i)))
+		for _, a := range argv {
+			h.Write([]byte(a))
+		}
+		if len(step.Env) > 0 {
+			keys := make([]string, 0, len(step.Env))
+			for k := range step.Env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				v := step.Env[k]
+				if len(data) > 0 {
+					exp, _ := resolve.ExpandEnv(map[string]string{k: v}, data)
+					v = exp[k]
+				}
+				h.Write([]byte(k))
+				h.Write([]byte(v))
+			}
+		}
+	}
+	envSlice := envMapToSlice(mergedEnv)
+	sort.Strings(envSlice)
+	for _, s := range envSlice {
+		h.Write([]byte(s))
+	}
+	return h.Sum(nil)
 }
 
 func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) error {

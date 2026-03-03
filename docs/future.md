@@ -2,12 +2,6 @@
 
 Deferred features and design notes. See the main plan for full context.
 
-## v1.1 (first after v1)
-
-- **Incremental builds** — file inputs/outputs per task, mtime + content hashing, persistent build cache.
-- **--why &lt;task&gt;** — list changed inputs / hash misses (depends on incremental build).
-- **Structured config validation** — schema, line/col error messages.
-
 ## v1.2
 
 - **Conditionals (when)** — run a target only when a condition holds; skip (no-op) otherwise. Proposed form: `when env VAR` (truthy env) or `when cmd ["prog", "args"]` (exit 0 = run). Enables e.g. integration tests only when DB is up or when `RUN_INTEGRATION=1`. Dependencies are still resolved; guard is evaluated before running the target’s steps.
@@ -30,5 +24,8 @@ Deferred features and design notes. See the main plan for full context.
 
 ## Resolved
 
+- **v1.1 incremental builds** — Implemented: `inputs` / `outputs` per target, content hashing, `.bake/cache/`, skip when up to date.
+- **v1.1 --why &lt;task&gt;** — Implemented: lists changed inputs, missing outputs, or "up to date (cache hit)".
+- **v1.1 structured config validation** — Implemented: duplicate target/suite, unknown deps, suite→target refs; errors include file:line:col.
 - **Windows** — Parser and spec are portable; execution on Windows is not supported in v1. Design avoids POSIX-only assumptions so Windows can be added later.
 - **Remote caching** — Not in v1; local-only.

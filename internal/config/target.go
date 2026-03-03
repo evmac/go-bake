@@ -4,6 +4,9 @@ package config
 type Target struct {
 	Name string
 
+	// Line and Column are 1-based source positions for error reporting (0 = unknown).
+	Line, Column int
+
 	// Deps are DAG edges; execution runs these before this target.
 	Deps []string
 
@@ -27,6 +30,11 @@ type Target struct {
 
 	// PassthroughStep is the 1-based step index that receives raw args after "--"; 0 = last step.
 	PassthroughStep int
+
+	// Inputs and Outputs are paths/globs (relative to root) for incremental build cache.
+	// When set, the target is skipped if cache hit and outputs are up to date.
+	Inputs  []string
+	Outputs []string
 }
 
 // Step is the argv-first semantic model: runner + argv (+ optional cwd, env, timeout, ok_exit_codes).

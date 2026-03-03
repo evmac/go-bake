@@ -3,8 +3,10 @@ package dsl
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/alecthomas/participle/v2"
+	"github.com/alecthomas/participle/v2/lexer"
 	"github.com/evmac/go-bake/internal/config"
 )
 
@@ -40,16 +42,20 @@ func Compile(ast *Bakefile) (*config.File, error) {
 	}
 	for _, e := range ast.Entries {
 		if e.Suite != nil {
-			out.Suites = append(out.Suites, &config.Suite{
-				Name:    e.Suite.Name,
-				Targets: e.Suite.Targets,
-			})
+			su := &config.Suite{Name: e.Suite.Name, Targets: e.Suite.Targets}
+			if e.Suite.Pos.Line > 0 {
+				su.Line, su.Column = e.Suite.Pos.Line, e.Suite.Pos.Column
+			}
+			out.Suites = append(out.Suites, su)
 			continue
 		}
 		if e.Target != nil {
 			t, err := compileTarget(e.Target)
 			if err != nil {
 				return nil, err
+			}
+			if e.Target.Pos.Line > 0 {
+				t.Line, t.Column = e.Target.Pos.Line, e.Target.Pos.Column
 			}
 			out.Targets = append(out.Targets, t)
 		}
@@ -104,6 +110,16 @@ func compileTarget(t *TargetBlock) (*config.Target, error) {
 			if e.Passthrough != nil {
 				tgt.PassthroughStep = e.Passthrough.Step
 			}
+			if e.Inputs != nil {
+				for _, p := range e.Inputs.Paths {
+					tgt.Inputs = append(tgt.Inputs, string(p))
+				}
+			}
+			if e.Outputs != nil {
+				for _, p := range e.Outputs.Paths {
+					tgt.Outputs = append(tgt.Outputs, string(p))
+				}
+			}
 		}
 	}
 	if len(t.CmdTok) > 0 {
@@ -130,12 +146,51 @@ func compileStep(s *Step) (config.Step, error) {
 	return config.Step{}, nil
 }
 
-// ParseAndCompile parses path and compiles to config.File.
+// ParseAndCompile parses path and compiles to config.File, then validates.
+// Returns config with BakePath set to path. Parse errors and validation errors
+// include file:line:col when available.
 func ParseAndCompile(path string) (*config.File, error) {
 	ast, err := ParseFile(path)
 	if err != nil {
+		return nil, formatParseError(path, err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
 		return nil, err
 	}
-	return Compile(ast)
+	cfg.BakePath = path
+	if errs := config.Validate(cfg); len(errs) > 0 {
+		return nil, validationErrList(errs)
+	}
+	return cfg, nil
+}
+
+// formatParseError adds file:line:col to participle (and other) parse errors when available.
+func formatParseError(filename string, err error) error {
+	if err == nil {
+		return nil
+	}
+	// participle.Error has Position() lexer.Position
+	if pe, ok := err.(interface{ Position() lexer.Position }); ok {
+		pos := pe.Position()
+		if pos.Line > 0 {
+			return fmt.Errorf("%s:%d:%d: %v", filename, pos.Line, pos.Column, err)
+		}
+	}
+	return fmt.Errorf("%s: %w", filename, err)
+}
+
+// validationErrList combines multiple validation errors into one.
+type validationErrList []config.ValidationError
+
+func (v validationErrList) Error() string {
+	var b strings.Builder
+	for i, e := range v {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(e.Error())
+	}
+	return b.String()
 }
 

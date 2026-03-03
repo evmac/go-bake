@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,45 @@ func TestParseInvalidExpectError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error for invalid-syntax.bake")
 	}
+	// Parse errors should include file:line:col when available
+	if errStr := err.Error(); !containsLineCol(errStr) {
+		t.Errorf("expected file:line:col in parse error, got: %s", errStr)
+	}
+}
+
+func TestParseAndCompileValidationErrors(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata")
+	t.Run("unknown_dep", func(t *testing.T) {
+		_, err := ParseAndCompile(filepath.Join(dir, "unknown-dep.bake"))
+		if err == nil {
+			t.Fatal("expected validation error for unknown dependency")
+		}
+		if !containsLineCol(err.Error()) {
+			t.Errorf("expected file:line:col in validation error, got: %s", err.Error())
+		}
+		if !strings.Contains(err.Error(), "unknown dependency") && !strings.Contains(err.Error(), "nonexistent") {
+			t.Errorf("expected unknown dependency message, got: %s", err.Error())
+		}
+	})
+	t.Run("duplicate_target", func(t *testing.T) {
+		_, err := ParseAndCompile(filepath.Join(dir, "duplicate-target.bake"))
+		if err == nil {
+			t.Fatal("expected validation error for duplicate target")
+		}
+		if !strings.Contains(err.Error(), "duplicate target") {
+			t.Errorf("expected duplicate target message, got: %s", err.Error())
+		}
+	})
+}
+
+func containsLineCol(s string) bool {
+	// Expect something like path:line:col or line:col
+	for i := 0; i < len(s)-2; i++ {
+		if s[i] == ':' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 func TestParseDepsAndEnv(t *testing.T) {

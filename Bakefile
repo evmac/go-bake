@@ -1,5 +1,7 @@
 target build {
   desc "build the bake binary"
+  inputs [ "./cmd/bake/*.go", "go.mod", "go.sum" ]
+  outputs [ "bin/bake" ]
   steps { exec ["go", "build", "-o", "bin/bake", "./cmd/bake"] }
 }
 

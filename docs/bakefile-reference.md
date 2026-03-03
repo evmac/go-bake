@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `cwd`, `desc`, `tags`, `passthrough`. Comments: `#` to end of line. Planned: `when` (guard) — see [Future roadmap](future.md).
+A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`. Comments: `#` to end of line. Planned: `when` (guard) — see [Future roadmap](future.md).
 
 ## File structure
 
@@ -36,6 +36,22 @@ target build cmd go build ./...
 - **shell** — run a script with a shell. `shell bash "go test ./... | tee out"`
 
 Steps run in order. Passthrough: `passthrough step=N` (default: last step); args after `--` on the CLI are appended to that step's argv.
+
+## Inputs and outputs (incremental build)
+
+Declare file inputs and outputs so bake can skip the target when nothing changed:
+
+```bake
+target build {
+  inputs [ "*.go", "go.mod" ]
+  outputs [ "bin/app" ]
+  steps { exec ["go", "build", "-o", "bin/app", "./..."] }
+}
+```
+
+- Paths are relative to the Bakefile root; globs are supported (`*`, `**` in future).
+- Cache is stored under `.bake/cache/`. If all inputs have the same content hash as the last run and all outputs exist, the target is skipped.
+- Use `bake --why <target>` to see why a target would run or be skipped (changed inputs, missing outputs, or cache hit).
 
 ## Deps
 

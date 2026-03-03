@@ -19,6 +19,9 @@ type File struct {
 type Suite struct {
 	Name    string
 	Targets []string
+
+	// Line and Column are 1-based source positions for error reporting (0 = unknown).
+	Line, Column int
 }
 
 // DefaultTargetName returns the default target: [target.default] or first target name.

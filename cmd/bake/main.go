@@ -10,6 +10,7 @@ import (
 
 	"github.com/evmac/go-bake/internal/config"
 	"github.com/evmac/go-bake/internal/dsl"
+	"github.com/evmac/go-bake/internal/env"
 	"github.com/evmac/go-bake/internal/resolve"
 	"github.com/evmac/go-bake/internal/runner"
 )
@@ -19,6 +20,7 @@ func main() {
 	ci := flag.Bool("ci", false, "Use CI suite for --list; run in CI mode")
 	dryRun := flag.Bool("dry-run", false, "Print commands and dependency order, do not run")
 	explain := flag.String("explain", "", "Show dependency chain, resolved vars, and commands for target")
+	why := flag.String("why", "", "Explain why target would run or be skipped (incremental build)")
 	debug := flag.Bool("debug", false, "Enable debug logging (or set BAKE_DEBUG=1)")
 	flag.Parse()
 
@@ -37,6 +39,13 @@ func main() {
 	args := flag.Args()
 	if *explain != "" {
 		if err := runExplain(*explain, *debug); err != nil {
+			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
+	if *why != "" {
+		if err := runWhy(*why, args); err != nil {
 			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
 			os.Exit(2)
 		}
@@ -211,6 +220,46 @@ func runDryRun(cfg *config.File, name string, tgt *config.Target, declared, live
 			}
 		}
 	}
+}
+
+func runWhy(targetName string, args []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	tgt := cfg.TargetByName(targetName)
+	if tgt == nil {
+		return fmt.Errorf("unknown target %q", targetName)
+	}
+	declared, live, _, err := resolve.ParseArgs(tgt, nil)
+	if err != nil {
+		return err
+	}
+	if len(args) > 1 {
+		declared, live, _, err = resolve.ParseArgs(tgt, args[1:])
+		if err != nil {
+			return err
+		}
+	}
+	dotenvMap, err := env.LoadDotenv(cfg.RootDir, cfg.Dotenv)
+	if err != nil {
+		return err
+	}
+	opts := runner.RunOptions{
+		RootDir:   cfg.RootDir,
+		Dotenv:    cfg.Dotenv,
+		TargetEnv: tgt.Env,
+		DeclaredArgs: declared,
+		LiveArgs:     live,
+	}
+	reasons, err := runner.WhyReasons(cfg.RootDir, tgt, opts, dotenvMap)
+	if err != nil {
+		return err
+	}
+	for _, r := range reasons {
+		fmt.Println(r)
+	}
+	return nil
 }
 
 func runExplain(targetName string, debug bool) error {

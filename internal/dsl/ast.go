@@ -1,5 +1,9 @@
 package dsl
 
+import (
+	"github.com/alecthomas/participle/v2/lexer"
+)
+
 // AST types produced by the participle parser. Compiled to config.File by Compile().
 
 // Bakefile is the root AST node.
@@ -21,12 +25,14 @@ type DotenvLine struct {
 
 // SuiteBlock is "suite" ident "{" ident+ "}".
 type SuiteBlock struct {
+	Pos     lexer.Position
 	Name    string   `"suite" @Ident`
 	Targets []string `"{" @Ident* "}"`
 }
 
 // TargetBlock is "target" ident "{" ... "}" (bracketed) or "target" ident "cmd" ... (single-line).
 type TargetBlock struct {
+	Pos    lexer.Position
 	Name   string       `"target" @Ident`
 	Body   *TargetBody  `( "{" @@ "}"`
 	CmdTok []string     `  | "cmd" @Ident* )` // single-line: cmd token+
@@ -37,7 +43,7 @@ type TargetBody struct {
 	Entries []*BodyEntry `@@*`
 }
 
-// BodyEntry is one of deps, steps, env, args, cwd, desc, tags, passthrough.
+// BodyEntry is one of deps, steps, env, args, cwd, desc, tags, passthrough, inputs, outputs.
 type BodyEntry struct {
 	Deps        *DepsClause        `  @@`
 	Steps       *StepsBlock        `| @@`
@@ -47,6 +53,18 @@ type BodyEntry struct {
 	Desc        *DescClause        `| @@`
 	Tags        *TagsClause        `| @@`
 	Passthrough *PassthroughClause `| @@`
+	Inputs      *InputsClause      `| @@`
+	Outputs     *OutputsClause     `| @@`
+}
+
+// InputsClause is "inputs" "[" path* "]" for incremental build cache (paths/globs).
+type InputsClause struct {
+	Paths []ExecElem `"inputs" "[" ( ( @Ident | @String ) ( "," ( @Ident | @String ) )* )? "]"`
+}
+
+// OutputsClause is "outputs" "[" path* "]" for incremental build cache (paths/globs).
+type OutputsClause struct {
+	Paths []ExecElem `"outputs" "[" ( ( @Ident | @String ) ( "," ( @Ident | @String ) )* )? "]"`
 }
 
 // DepsClause is "deps" ident ("," ident)* so the list does not consume following keywords.
