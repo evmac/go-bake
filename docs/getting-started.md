@@ -2,7 +2,7 @@
 
 ## Install
 
-- **Binary:** `go install github.com/em/go-bake/cmd/bake@latest`
+- **Binary:** `go install github.com/evmac/go-bake/cmd/bake@latest`
 - **From source:** Clone the repo and run `go build -o bin/bake ./cmd/bake`
 
 ## First Bakefile

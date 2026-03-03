@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/em/go-bake/internal/config"
-	"github.com/em/go-bake/internal/dsl"
-	"github.com/em/go-bake/internal/resolve"
-	"github.com/em/go-bake/internal/runner"
+	"github.com/evmac/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/dsl"
+	"github.com/evmac/go-bake/internal/resolve"
+	"github.com/evmac/go-bake/internal/runner"
 )
 
 func main() {
