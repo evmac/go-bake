@@ -1,0 +1,8 @@
+target build {
+  steps { exec ["go", "build", "./..."] }
+}
+
+target test {
+  deps build
+  steps { exec ["go", "test", "./..."] }
+}

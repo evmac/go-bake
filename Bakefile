@@ -1,0 +1,23 @@
+target build {
+  desc "build the bake binary"
+  steps { exec ["go", "build", "-o", "bin/bake", "./cmd/bake"] }
+}
+
+target test {
+  desc "run tests"
+  deps build
+  steps { exec ["go", "test", "./..."] }
+}
+
+target list {
+  desc "list targets (alias for --list)"
+  steps { exec ["go", "run", "./cmd/bake", "--list"] }
+}
+
+suite local {
+  build test list
+}
+
+suite ci {
+  build test
+}

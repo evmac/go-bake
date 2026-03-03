@@ -1,0 +1,12 @@
+dotenv .env .env.local
+
+target build {
+  env { GOOS linux GOARCH amd64 }
+  steps { exec ["go", "build", "./..."] }
+}
+
+target run {
+  deps build
+  env { PORT 8080 }
+  steps { exec ["./app"] }
+}

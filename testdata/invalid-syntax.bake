@@ -1,0 +1,4 @@
+target broken {
+  deps
+  steps { exec ["echo"] }
+}

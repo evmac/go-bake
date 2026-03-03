@@ -1,0 +1,5 @@
+target deploy {
+  args env string -e staging
+  args dry_run bool false
+  steps { exec ["echo", "env={{.env}}", "dry_run={{.dry_run}}"] }
+}

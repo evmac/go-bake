@@ -1,0 +1,20 @@
+suite local {
+  build test
+}
+
+suite ci {
+  build lint test
+}
+
+target build {
+  steps { exec ["go", "build", "./..."] }
+}
+
+target test {
+  deps build
+  steps { exec ["go", "test", "./..."] }
+}
+
+target lint {
+  steps { exec ["golangci-lint", "run"] }
+}

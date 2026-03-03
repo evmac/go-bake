@@ -1,0 +1,21 @@
+# Build
+bin/
+bake
+*.exe
+*.test
+
+# Repo-scoped install shims (§5c)
+.bake/
+
+# Local env (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+
+# IDE (optional)
+.idea/
+*.swp
+*.swo
