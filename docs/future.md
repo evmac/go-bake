@@ -10,6 +10,7 @@ Deferred features and design notes. See the main plan for full context.
 
 ## v1.2
 
+- **Conditionals (when)** — run a target only when a condition holds; skip (no-op) otherwise. Proposed form: `when env VAR` (truthy env) or `when cmd ["prog", "args"]` (exit 0 = run). Enables e.g. integration tests only when DB is up or when `RUN_INTEGRATION=1`. Dependencies are still resolved; guard is evaluated before running the target’s steps.
 - **Profiles as overlays** — first-class profile overlays (base → profile → CLI).
 - **Include/import** — multiple Bakefiles, namespaces.
 - **Structured passthrough** — declare passthrough target per step; named channels.
@@ -22,10 +23,10 @@ Deferred features and design notes. See the main plan for full context.
 
 - **Agent / LLM API** — `bake plan --json`, capability flags, sandbox, `bake api schema/list/explain`.
 - **Remote cache / artifacts** — content-hash cache, optional remote.
-- **Background resources** — `background: true`, PID/container tracking, `bake down`.
 - **Make → Bake conversion** — script or mapping guide.
 - **Windows first-class** — execution and testing on Windows.
 - **Idempotency / caching for agents** — content-hash cache keyed by inputs + params.
+- **Background resources** (deferred) — `background: true`, PID/container tracking, `bake down`. Follows conditionals; use `when` + deps for “ensure DB up then run tests” until then.
 
 ## Resolved
 
