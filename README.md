@@ -4,22 +4,22 @@ A minimal Make replacement in Go: one binary, one Bakefile, explicit DAG, typed 
 
 ## Install
 
-**Homebrew** (after [adding the tap](docs/brew.md)):
+**Homebrew** (after [adding the tap](docs/homebrew.md)):
 
 ```bash
-brew tap em/bake && brew install bake
+brew tap evmac/bake && brew install bake
 ```
 
 **Go**:
 
 ```bash
-go install github.com/em/go-bake/cmd/bake@latest
+go install github.com/evmac/go-bake/cmd/bake@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/em/go-bake && cd go-bake && go build -o bin/bake ./cmd/bake
+git clone https://github.com/evmac/go-bake && cd go-bake && go build -o bin/bake ./cmd/bake
 ```
 
 ## Quick start
