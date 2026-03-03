@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/alecthomas/participle/v2"
-	"github.com/em/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/config"
 )
 
 // Parser for Bakefiles.

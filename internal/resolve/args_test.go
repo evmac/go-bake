@@ -3,7 +3,7 @@ package resolve
 import (
 	"testing"
 
-	"github.com/em/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/config"
 )
 
 func TestParseArgs(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/em/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/config"
 )
 
 func TestRunEcho(t *testing.T) {

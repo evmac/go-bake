@@ -3,7 +3,7 @@ package runner
 import (
 	"testing"
 
-	"github.com/em/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/config"
 )
 
 func TestTopoOrder(t *testing.T) {

@@ -3,7 +3,7 @@ package runner
 import (
 	"fmt"
 
-	"github.com/em/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/config"
 )
 
 // TopoOrder returns target names in dependency order (deps first, then the target).

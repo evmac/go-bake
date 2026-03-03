@@ -1,4 +1,4 @@
-module github.com/em/go-bake
+module github.com/evmac/go-bake
 
 go 1.21
 
