@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`. Comments: `#` to end of line. Planned: `when` (guard) — see [Future roadmap](future.md).
+A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`. Comments: `#` to end of line.
 
 ## File structure
 
@@ -23,6 +23,13 @@ target build {
 }
 ```
 
+**Single step** — When a target has only one command, you can omit the `steps { }` wrapper and write `exec` or `cmd` directly:
+
+```bake
+target format { exec ["go", "fmt", "./..."] }
+target fmt { cmd go fmt ./... }
+```
+
 **Single-line form** (only when the file has exactly one target and one step):
 
 ```bake
@@ -35,7 +42,7 @@ target build cmd go build ./...
 - **cmd** — sugar: space-separated tokens. `cmd go test ./...`
 - **shell** — run a script with a shell. `shell bash "go test ./... | tee out"`
 
-Steps run in order. Passthrough: `passthrough step=N` (default: last step); args after `--` on the CLI are appended to that step's argv.
+Steps run in order. Passthrough: `passthrough step=N` (default: last step); args after `--` on the CLI are appended to that step's argv. For how passthrough relates to overrides and target variants, see [Parameterization](parameterization.md).
 
 ## Inputs and outputs (incremental build)
 
@@ -52,6 +59,25 @@ target build {
 - Paths are relative to the Bakefile root; globs are supported (`*`, `**` in future).
 - Cache is stored under `.bake/cache/`. If all inputs have the same content hash as the last run and all outputs exist, the target is skipped.
 - Use `bake --why <target>` to see why a target would run or be skipped (changed inputs, missing outputs, or cache hit).
+
+## Conditionals (when)
+
+Run a target only when a condition holds; otherwise the target is skipped (no-op, but still counts as success for dependents). Dependencies are always run first.
+
+- **when env VAR** — run only if the environment variable `VAR` is set (non-empty). Example: `when env CI` to run only in CI.
+- **when cmd ["prog", "args"]** — run only if the command exits 0. Example: `when cmd ["test", "-f", "Makefile"]` to run only when Makefile exists.
+
+```bake
+target test {
+  when env CI
+  steps { exec ["go", "test", "./..."] }
+}
+
+target legacy {
+  when cmd ["test", "-f", "Makefile"]
+  steps { exec ["make", "build"] }
+}
+```
 
 ## Deps
 

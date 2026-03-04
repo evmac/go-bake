@@ -6,9 +6,10 @@ import (
 	"path/filepath"
 )
 
-// File is the top-level parsed Bakefile: dotenv list, targets, suites.
+// File is the top-level parsed Bakefile: dotenv list, imports, targets, suites.
 type File struct {
 	Dotenv   []string
+	Imports  []string // paths to other Bakefiles (relative or absolute); resolved and merged at load time
 	Targets  []*Target
 	Suites   []*Suite
 	RootDir  string // directory containing Bakefile

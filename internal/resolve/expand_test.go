@@ -37,3 +37,22 @@ func TestExpandArgv(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestExpandEnv(t *testing.T) {
+	data := map[string]interface{}{"env": "prod", "port": "8080"}
+	env := map[string]string{"ENV": "{{.env}}", "PORT": "{{.port}}"}
+	got, err := ExpandEnv(env, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["ENV"] != "prod" || got["PORT"] != "8080" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestExpandInvalidTemplate(t *testing.T) {
+	_, err := Expand("{{.unclosed", map[string]interface{}{"x": "y"})
+	if err == nil {
+		t.Error("expected error for invalid template")
+	}
+}

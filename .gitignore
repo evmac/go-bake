@@ -3,8 +3,9 @@ bin/
 /bake
 *.exe
 *.test
+coverage.out
 
-# Repo-scoped install shims (§5c)
+# Repo-scoped install shims + cache
 .bake/
 
 # Local env (never commit secrets)

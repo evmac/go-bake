@@ -1,6 +1,6 @@
 # Bake
 
-A minimal Make replacement in Go: one binary, one Bakefile, explicit DAG, typed args, and repo-scoped commands.
+A minimal Make replacement in Go.
 
 ## Install
 
@@ -29,12 +29,12 @@ Create a `Bakefile` in your project root:
 ```bake
 target build {
   desc "build the binary"
-  steps { exec ["go", "build", "-o", "bin/app", "./cmd/app"] }
+  exec ["go", "build", "-o", "bin/app", "./cmd/app"]
 }
 
 target test {
   deps build
-  steps { exec ["go", "test", "./..."] }
+  exec ["go", "test", "./..."]
 }
 
 suite local { build test }
@@ -51,13 +51,10 @@ Then:
 
 ## Docs
 
+- [Book of Bake](docs/book-of-bake.md)
 - [Getting started](docs/getting-started.md)
 - [Bakefile reference](docs/bakefile-reference.md)
 - [CLI reference](docs/cli-reference.md)
 - [Grammar spec](docs/grammar-spec.md)
 - [LLM reference](docs/llm-reference.md)
 - [Future roadmap](docs/future.md)
-
-## License
-
-MIT

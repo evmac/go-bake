@@ -35,6 +35,12 @@ type Target struct {
 	// When set, the target is skipped if cache hit and outputs are up to date.
 	Inputs  []string
 	Outputs []string
+
+	// When: run target only if condition holds. At most one of WhenEnv / WhenCmd is set.
+	// WhenEnv: skip unless os.Getenv(WhenEnv) != "".
+	// WhenCmd: skip unless running Argv exits 0 (e.g. when cmd ["test", "-f", "file"]).
+	WhenEnv string   // env var name
+	WhenCmd []string // argv for guard command
 }
 
 // Step is the argv-first semantic model: runner + argv (+ optional cwd, env, timeout, ok_exit_codes).

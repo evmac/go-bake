@@ -20,9 +20,9 @@ type RunOptions struct {
 	RootDir      string
 	Dotenv       []string
 	TargetEnv    map[string]string
-	DeclaredArgs map[string]string   // for {{.argName}}
-	LiveArgs     map[string]string   // for {{.live.key}}
-	Passthrough  []string            // raw args after "--" to append to passthrough step
+	DeclaredArgs map[string]string // for {{.argName}}
+	LiveArgs     map[string]string // for {{.live.key}}
+	Passthrough  []string          // raw args after "--" to append to passthrough step
 }
 
 // Run builds the DAG, runs dependencies in order, then runs the target's steps.
@@ -58,6 +58,27 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 
 // runTargetWithCache runs the target, skipping if incremental cache says up to date.
 func runTargetWithCache(ctx context.Context, tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) error {
+	// When guard: skip target (no-op, success for DAG) if condition is false.
+	if len(tgt.WhenCmd) > 0 {
+		mergedEnv := env.Merge(os.Environ(), dotenvMap, tgt.Env)
+		cwd := rootDir
+		if tgt.Cwd != "" {
+			cwd = filepath.Join(rootDir, tgt.Cwd)
+		}
+		cmd := exec.CommandContext(ctx, tgt.WhenCmd[0], tgt.WhenCmd[1:]...)
+		cmd.Dir = cwd
+		cmd.Env = envMapToSlice(mergedEnv)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return nil // condition false: skip target
+		}
+	} else if tgt.WhenEnv != "" {
+		if os.Getenv(tgt.WhenEnv) == "" {
+			return nil // condition false: skip target
+		}
+	}
+
 	if len(tgt.Inputs) == 0 || len(tgt.Outputs) == 0 {
 		return runTargetSteps(ctx, tgt, rootDir, dotenvMap, opts)
 	}

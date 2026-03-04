@@ -8,14 +8,20 @@ import (
 
 // Bakefile is the root AST node.
 type Bakefile struct {
-	Dotenv   *DotenvLine   `@@?`
-	Entries  []*FileEntry  `@@*`
+	Dotenv  *DotenvLine  `@@?`
+	Entries []*FileEntry `@@*`
 }
 
-// FileEntry is either a Suite or a Target (bracketed or single-line).
+// FileEntry is an import, Suite, or Target.
 type FileEntry struct {
-	Suite   *SuiteBlock   `  @@`
-	Target  *TargetBlock  `| @@`
+	Import *ImportLine  `  @@`
+	Suite  *SuiteBlock  `| @@`
+	Target *TargetBlock `| @@`
+}
+
+// ImportLine is "import" string (path to another Bakefile).
+type ImportLine struct {
+	Path QuotedString `"import" @String`
 }
 
 // DotenvLine is "dotenv" followed by file names.
@@ -33,9 +39,9 @@ type SuiteBlock struct {
 // TargetBlock is "target" ident "{" ... "}" (bracketed) or "target" ident "cmd" ... (single-line).
 type TargetBlock struct {
 	Pos    lexer.Position
-	Name   string       `"target" @Ident`
-	Body   *TargetBody  `( "{" @@ "}"`
-	CmdTok []string     `  | "cmd" @Ident* )` // single-line: cmd token+
+	Name   string      `"target" @Ident`
+	Body   *TargetBody `( "{" @@ "}"`
+	CmdTok []string    `  | "cmd" @Ident* )` // single-line: cmd token+
 }
 
 // TargetBody is the content inside target { }; each clause can appear in any order, args may repeat.
@@ -43,10 +49,11 @@ type TargetBody struct {
 	Entries []*BodyEntry `@@*`
 }
 
-// BodyEntry is one of deps, steps, env, args, cwd, desc, tags, passthrough, inputs, outputs.
+// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when.
 type BodyEntry struct {
 	Deps        *DepsClause        `  @@`
 	Steps       *StepsBlock        `| @@`
+	Step        *Step              `| @@` // single step without "steps { }" wrapper
 	Env         *EnvBlock          `| @@`
 	Args        *ArgsClause        `| @@`
 	Cwd         *CwdClause         `| @@`
@@ -55,6 +62,18 @@ type BodyEntry struct {
 	Passthrough *PassthroughClause `| @@`
 	Inputs      *InputsClause      `| @@`
 	Outputs     *OutputsClause     `| @@`
+	WhenEnv     *WhenEnvClause     `| @@`
+	WhenCmd     *WhenCmdClause     `| @@`
+}
+
+// WhenEnvClause is "when" "env" ident — condition: env var is set (non-empty).
+type WhenEnvClause struct {
+	Var string `"when" "env" @Ident`
+}
+
+// WhenCmdClause is "when" "cmd" "[" argv "]" — condition: command exits 0.
+type WhenCmdClause struct {
+	Argv []ExecElem `"when" "cmd" "[" ( ( @Ident | @String ) ( "," ( @Ident | @String ) )* )? "]"`
 }
 
 // InputsClause is "inputs" "[" path* "]" for incremental build cache (paths/globs).

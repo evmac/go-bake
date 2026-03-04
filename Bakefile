@@ -2,13 +2,24 @@ target build {
   desc "build the bake binary"
   inputs [ "./cmd/bake/*.go", "go.mod", "go.sum" ]
   outputs [ "bin/bake" ]
-  steps { exec ["go", "build", "-o", "bin/bake", "./cmd/bake"] }
+  exec ["go", "build", "-o", "bin/bake", "./cmd/bake"]
 }
 
 target test {
   desc "run tests"
   deps build
-  steps { exec ["go", "test", "./..."] }
+  exec ["go", "test", "./..."]
+}
+
+target test-cover {
+  desc "run tests with coverage (produces coverage.out)"
+  deps build
+  exec ["go", "test", "./...", "-coverprofile=coverage.out"]
+}
+
+target format {
+  desc "format Go code (go fmt ./...)"
+  exec ["go", "fmt", "./..."]
 }
 
 target list {
@@ -17,9 +28,9 @@ target list {
 }
 
 suite local {
-  build test list
+  build format test
 }
 
 suite ci {
-  build test
+  build test-cover
 }

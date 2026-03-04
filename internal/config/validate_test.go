@@ -54,3 +54,22 @@ func TestValidateSuiteUnknownTarget(t *testing.T) {
 	}
 }
 
+func TestValidationErrorError(t *testing.T) {
+	e := ValidationError{Filename: "Bakefile", Line: 2, Column: 3, Message: "test error"}
+	s := e.Error()
+	if s == "" || !strings.Contains(s, "test error") {
+		t.Errorf("Error(): %q", s)
+	}
+	e2 := ValidationError{Message: "no pos"}
+	if e2.Error() != "no pos" {
+		t.Errorf("Error() without pos: %q", e2.Error())
+	}
+	e3 := ValidationError{Filename: "Bakefile", Message: "file only"}
+	if !strings.Contains(e3.Error(), "Bakefile") || !strings.Contains(e3.Error(), "file only") {
+		t.Errorf("Error() filename+msg: %q", e3.Error())
+	}
+	e4 := ValidationError{Line: 1, Column: 2, Message: "line col no file"}
+	if !strings.Contains(e4.Error(), "1") || !strings.Contains(e4.Error(), "2") {
+		t.Errorf("Error() line+col: %q", e4.Error())
+	}
+}

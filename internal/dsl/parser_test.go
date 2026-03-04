@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -179,5 +180,179 @@ func TestParseDepsAndEnv(t *testing.T) {
 	tgt = cfg.Targets[0]
 	if tgt.Env["GOOS"] != "linux" || tgt.Env["GOARCH"] != "amd64" {
 		t.Errorf("env: got %v", tgt.Env)
+	}
+}
+
+func TestParseWhen(t *testing.T) {
+	// when env VAR
+	src1 := `target t { when env CI steps { exec ["go", "test"] } }`
+	ast1, err := Parser.ParseString("", src1)
+	if err != nil {
+		t.Fatalf("parse when env: %v", err)
+	}
+	cfg1, err := Compile(ast1)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt1 := cfg1.Targets[0]
+	if tgt1.WhenEnv != "CI" || tgt1.WhenCmd != nil {
+		t.Errorf("when env: got WhenEnv=%q WhenCmd=%v", tgt1.WhenEnv, tgt1.WhenCmd)
+	}
+	// when cmd ["test", "-f", "file"]
+	src2 := `target t { when cmd ["test", "-f", "Makefile"] steps { exec ["make"] } }`
+	ast2, err := Parser.ParseString("", src2)
+	if err != nil {
+		t.Fatalf("parse when cmd: %v", err)
+	}
+	cfg2, err := Compile(ast2)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt2 := cfg2.Targets[0]
+	if tgt2.WhenEnv != "" || len(tgt2.WhenCmd) != 3 || tgt2.WhenCmd[0] != "test" || tgt2.WhenCmd[1] != "-f" || tgt2.WhenCmd[2] != "Makefile" {
+		t.Errorf("when cmd: got WhenEnv=%q WhenCmd=%v", tgt2.WhenEnv, tgt2.WhenCmd)
+	}
+}
+
+func TestParseSingleStepShorthand(t *testing.T) {
+	// Bare exec or cmd in target body (no "steps { }" wrapper)
+	src := `target format { exec ["go", "fmt", "./..."] }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg.Targets) != 1 || len(cfg.Targets[0].Steps) != 1 {
+		t.Fatalf("expected 1 target with 1 step, got %d targets", len(cfg.Targets))
+	}
+	argv := cfg.Targets[0].Steps[0].Argv
+	if len(argv) != 3 || argv[0] != "go" || argv[1] != "fmt" || argv[2] != "./..." {
+		t.Errorf("argv: got %v", argv)
+	}
+	// cmd shorthand (idents only; no leading -)
+	src2 := `target fmt { cmd go fmt ./... }`
+	ast2, err := Parser.ParseString("", src2)
+	if err != nil {
+		t.Fatalf("parse cmd: %v", err)
+	}
+	cfg2, err := Compile(ast2)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg2.Targets[0].Steps) != 1 || cfg2.Targets[0].Steps[0].Argv[0] != "go" {
+		t.Errorf("cmd step: got %v", cfg2.Targets[0].Steps)
+	}
+}
+
+func TestParseQuotedStringsInExecAndEnv(t *testing.T) {
+	// Hit ExecElem and EnvValue Capture with quoted strings (unescaping).
+	src := `target t { env { KEY "value with spaces" } steps { exec ["cmd", "arg with space"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.Targets[0]
+	if tgt.Env["KEY"] != "value with spaces" {
+		t.Errorf("env KEY: got %q", tgt.Env["KEY"])
+	}
+	if len(tgt.Steps) != 1 || len(tgt.Steps[0].Argv) != 2 || tgt.Steps[0].Argv[1] != "arg with space" {
+		t.Errorf("argv: got %v", tgt.Steps)
+	}
+}
+
+func TestParseAndCompileInvalidSyntax(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.bake")
+	os.WriteFile(path, []byte("target x { steps { exec ["), 0644)
+	_, err := ParseAndCompile(path)
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !strings.Contains(err.Error(), "bad.bake") && !strings.Contains(err.Error(), "parse") {
+		t.Errorf("error should mention file or parse: %v", err)
+	}
+}
+
+func TestParseFileMissing(t *testing.T) {
+	_, err := ParseFile(filepath.Join(t.TempDir(), "nonexistent.bake"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestParseImport(t *testing.T) {
+	src := `import "./ops.bake"
+target build { steps { exec ["go", "build"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg.Imports) != 1 || cfg.Imports[0] != "./ops.bake" {
+		t.Errorf("imports: got %v", cfg.Imports)
+	}
+	if len(cfg.Targets) != 1 || cfg.Targets[0].Name != "build" {
+		t.Errorf("targets: got %v", cfg.Targets)
+	}
+}
+
+func TestLoadWithImports(t *testing.T) {
+	// Create temp dir with main.bake and imported.bake
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "Bakefile")
+	importedPath := filepath.Join(dir, "ops.bake")
+	mainContent := `import "ops.bake"
+target all { deps build, build_ops }
+target build { steps { exec ["go", "build"] } }`
+	importedContent := `target build_ops { steps { exec ["echo", "ops"] } }`
+	if err := os.WriteFile(mainPath, []byte(mainContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(importedPath, []byte(importedContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadWithImports(mainPath)
+	if err != nil {
+		t.Fatalf("LoadWithImports: %v", err)
+	}
+	// Merged: main's targets first, then imported. So build, all, then build_ops.
+	if len(cfg.Targets) != 3 {
+		t.Fatalf("expected 3 targets, got %d: %v", len(cfg.Targets), cfg.Targets)
+	}
+	names := make([]string, len(cfg.Targets))
+	for i, tgt := range cfg.Targets {
+		names[i] = tgt.Name
+	}
+	// Order: all, build (main), build_ops (imported)
+	if cfg.TargetByName("all") == nil || cfg.TargetByName("build") == nil || cfg.TargetByName("build_ops") == nil {
+		t.Errorf("merged targets: got %v", names)
+	}
+	if cfg.RootDir != dir {
+		t.Errorf("RootDir: got %q", cfg.RootDir)
+	}
+}
+
+func TestLoadWithImportsCycle(t *testing.T) {
+	dir := t.TempDir()
+	aPath := filepath.Join(dir, "a.bake")
+	bPath := filepath.Join(dir, "b.bake")
+	os.WriteFile(aPath, []byte("import \"b.bake\"\ntarget a { steps { exec [\"true\"] } }\n"), 0644)
+	os.WriteFile(bPath, []byte("import \"a.bake\"\ntarget b { steps { exec [\"true\"] } }\n"), 0644)
+	_, err := LoadWithImports(aPath)
+	if err == nil {
+		t.Fatal("expected error for import cycle")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected cycle in error, got: %v", err)
 	}
 }

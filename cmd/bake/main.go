@@ -16,65 +16,65 @@ import (
 )
 
 func main() {
-	list := flag.Bool("list", false, "List targets (suite-filtered)")
-	ci := flag.Bool("ci", false, "Use CI suite for --list; run in CI mode")
-	dryRun := flag.Bool("dry-run", false, "Print commands and dependency order, do not run")
-	explain := flag.String("explain", "", "Show dependency chain, resolved vars, and commands for target")
-	why := flag.String("why", "", "Explain why target would run or be skipped (incremental build)")
-	debug := flag.Bool("debug", false, "Enable debug logging (or set BAKE_DEBUG=1)")
-	flag.Parse()
+	code, err := RunMain(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bake: %v\n", err)
+		os.Exit(code)
+	}
+}
 
+// RunMain runs the CLI with the given args (excluding program name). Returns exit code (1 = run failure, 2 = usage/config) and error.
+func RunMain(args []string) (int, error) {
+	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
+	list := fs.Bool("list", false, "List targets (suite-filtered)")
+	ci := fs.Bool("ci", false, "Use CI suite for --list; run in CI mode")
+	dryRun := fs.Bool("dry-run", false, "Print commands and dependency order, do not run")
+	explain := fs.String("explain", "", "Show dependency chain, resolved vars, and commands for target")
+	why := fs.String("why", "", "Explain why target would run or be skipped (incremental build)")
+	debug := fs.Bool("debug", false, "Enable debug logging (or set BAKE_DEBUG=1)")
+	if err := fs.Parse(args); err != nil {
+		return 2, err
+	}
 	if os.Getenv("BAKE_DEBUG") == "1" || os.Getenv("BAKE_DEBUG") == "true" {
 		*debug = true
 	}
 
 	if *list {
 		if err := runList(*ci); err != nil {
-			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-			os.Exit(2)
+			return 2, err
 		}
-		return
+		return 0, nil
 	}
-
-	args := flag.Args()
+	posArgs := fs.Args()
 	if *explain != "" {
 		if err := runExplain(*explain, *debug); err != nil {
-			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-			os.Exit(2)
+			return 2, err
 		}
-		return
+		return 0, nil
 	}
 	if *why != "" {
-		if err := runWhy(*why, args); err != nil {
-			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-			os.Exit(2)
+		if err := runWhy(*why, posArgs); err != nil {
+			return 2, err
 		}
-		return
+		return 0, nil
 	}
-
-	if len(args) == 0 {
+	if len(posArgs) == 0 {
 		if err := runDefault(); err != nil {
-			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-			os.Exit(2)
+			return 2, err
 		}
-		return
+		return 0, nil
 	}
-
-	target := args[0]
+	target := posArgs[0]
 	if target == "install" {
 		if err := runInstall(); err != nil {
-			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-			os.Exit(2)
+			return 2, err
 		}
-		return
+		return 0, nil
 	}
-
 	cfg, err := loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-		os.Exit(2)
+		return 2, err
 	}
-	// If target is a suite name, run all targets in that suite
 	if su := cfg.SuiteByName(target); su != nil {
 		for _, name := range su.Targets {
 			tgt := cfg.TargetByName(name)
@@ -87,44 +87,35 @@ func main() {
 				continue
 			}
 			if err := runTarget(cfg, name, tgt, declared, live, passthrough); err != nil {
-				fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-				os.Exit(1)
+				return 1, err
 			}
 		}
-		return
+		return 0, nil
 	}
 	tgt := cfg.TargetByName(target)
 	if tgt == nil {
-		fmt.Fprintf(os.Stderr, "bake: unknown target %q (use 'bake --list')\n", target)
-		os.Exit(2)
+		return 2, fmt.Errorf("unknown target %q (use 'bake --list')", target)
 	}
-	declared, live, passthrough, err := resolve.ParseArgs(tgt, args[1:])
+	declared, live, passthrough, err := resolve.ParseArgs(tgt, posArgs[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-		os.Exit(2)
+		return 2, err
 	}
 	if *dryRun {
 		runDryRun(cfg, target, tgt, declared, live, passthrough)
-		return
+		return 0, nil
 	}
 	if err := runTarget(cfg, target, tgt, declared, live, passthrough); err != nil {
-		fmt.Fprintf(os.Stderr, "bake: %v\n", err)
-		os.Exit(1)
+		return 1, err
 	}
+	return 0, nil
 }
 
 func loadConfig() (*config.File, error) {
-	rootDir, path, err := config.FindBakefile(".")
+	_, path, err := config.FindBakefile(".")
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := dsl.ParseAndCompile(path)
-	if err != nil {
-		return nil, err
-	}
-	cfg.RootDir = rootDir
-	cfg.BakePath = path
-	return cfg, nil
+	return dsl.LoadWithImports(path)
 }
 
 func runList(ciMode bool) error {
@@ -246,9 +237,9 @@ func runWhy(targetName string, args []string) error {
 		return err
 	}
 	opts := runner.RunOptions{
-		RootDir:   cfg.RootDir,
-		Dotenv:    cfg.Dotenv,
-		TargetEnv: tgt.Env,
+		RootDir:      cfg.RootDir,
+		Dotenv:       cfg.Dotenv,
+		TargetEnv:    tgt.Env,
 		DeclaredArgs: declared,
 		LiveArgs:     live,
 	}
