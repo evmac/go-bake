@@ -1,0 +1,6 @@
+# Run GitHub Actions locally with: act push  or  bake act
+# Requires Docker and act (brew install act).
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+--container-architecture linux/amd64
+# Disable binding host Docker socket (avoids mount errors on Docker Desktop; our CI doesn't use Docker)
+--container-daemon-socket -

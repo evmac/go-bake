@@ -36,5 +36,5 @@ Use this for reliable Bakefile generation.
 dotenv .env
 target build { steps { exec ["go","build","./..."] } }
 target test { deps build steps { exec ["go","test","./..."] } }
-suite local { build test }
+suite dev { build test }
 ```

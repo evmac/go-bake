@@ -41,13 +41,26 @@ func Compile(ast *Bakefile) (*config.File, error) {
 	if ast.Dotenv != nil {
 		out.Dotenv = ast.Dotenv.Files
 	}
+	filePrivate := false
 	for _, e := range ast.Entries {
 		if e.Import != nil {
 			out.Imports = append(out.Imports, e.Import.Path.Value)
 			continue
 		}
+		if e.Private != nil {
+			filePrivate = true
+			continue
+		}
+		if e.Profile != nil {
+			p, err := compileProfile(e.Profile)
+			if err != nil {
+				return nil, err
+			}
+			out.Profiles = append(out.Profiles, p)
+			continue
+		}
 		if e.Target != nil {
-			t, err := compileTarget(e.Target)
+			t, err := compileTarget(e.Target, filePrivate)
 			if err != nil {
 				return nil, err
 			}
@@ -68,12 +81,37 @@ func Compile(ast *Bakefile) (*config.File, error) {
 	return out, nil
 }
 
-func compileTarget(t *TargetBlock) (*config.Target, error) {
-	tgt := &config.Target{Name: t.Name}
+func compileProfile(p *ProfileBlock) (*config.Profile, error) {
+	out := &config.Profile{Name: p.Name, Env: make(map[string]string)}
+	if p.Body != nil {
+		for _, e := range p.Body.Entries {
+			if e == nil {
+				continue
+			}
+			if e.Dotenv != nil {
+				for _, path := range e.Dotenv.Paths {
+					out.Dotenv = append(out.Dotenv, string(path))
+				}
+			}
+			if e.Env != nil {
+				for _, pair := range e.Env.Pairs {
+					out.Env[pair.Key] = string(pair.Value)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func compileTarget(t *TargetBlock, filePrivate bool) (*config.Target, error) {
+	tgt := &config.Target{Name: t.Name, Private: filePrivate}
 	if t.Body != nil {
 		for _, e := range t.Body.Entries {
 			if e == nil {
 				continue
+			}
+			if e.Private != nil {
+				tgt.Private = true
 			}
 			if e.Deps != nil {
 				tgt.Deps = e.Deps.Names
@@ -230,6 +268,7 @@ func loadWithImports(path string, visited map[string]bool) (*config.File, error)
 		RootDir:  cfg.RootDir,
 		BakePath: cfg.BakePath,
 		Dotenv:   append([]string{}, cfg.Dotenv...),
+		Profiles: append([]*config.Profile{}, cfg.Profiles...),
 		Targets:  append([]*config.Target{}, cfg.Targets...),
 		Suites:   append([]*config.Suite{}, cfg.Suites...),
 	}
@@ -244,6 +283,7 @@ func loadWithImports(path string, visited map[string]bool) (*config.File, error)
 			return nil, fmt.Errorf("import %q: %w", imp, err)
 		}
 		merged.Dotenv = append(merged.Dotenv, impCfg.Dotenv...)
+		merged.Profiles = append(merged.Profiles, impCfg.Profiles...)
 		merged.Targets = append(merged.Targets, impCfg.Targets...)
 		merged.Suites = append(merged.Suites, impCfg.Suites...)
 	}

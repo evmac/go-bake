@@ -5,10 +5,27 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/evmac/go-bake/internal/cache"
 	"github.com/evmac/go-bake/internal/config"
 )
+
+// systemTouch returns a path to touch that is not shadowed by .bake/bin in CI.
+func systemTouch() string {
+	if runtime.GOOS == "windows" {
+		return "touch"
+	}
+	return "/usr/bin/touch"
+}
+
+// stepTestF runs "test -f <path>" via sh so the shell builtin is used (avoids
+// .bake/bin/test shim in CI and works on macOS where /usr/bin/test does not exist).
+func stepTestF(path string) config.Step {
+	return config.Step{Runner: "sh", Argv: []string{"test", "-f", path}}
+}
 
 func TestRunEcho(t *testing.T) {
 	cfg := &config.File{
@@ -28,13 +45,72 @@ func TestRunEcho(t *testing.T) {
 	}
 }
 
-func TestRunWithDeps(t *testing.T) {
+// TestRunWithShowCmd exercises printCmdToStderr (ShowCmd: true).
+func TestRunWithShowCmd(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.File{
 		RootDir: dir,
 		Targets: []*config.Target{
-			{Name: "first", Steps: []config.Step{{Argv: []string{"touch", filepath.Join(dir, "first.done")}}}},
-			{Name: "second", Deps: []string{"first"}, Steps: []config.Step{{Argv: []string{"test", "-f", filepath.Join(dir, "first.done")}}}},
+			{Name: "show", Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	err = Run(context.Background(), cfg, "show", RunOptions{RootDir: dir, ShowCmd: true})
+	os.Stderr = oldStderr
+	w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	for {
+		var b [256]byte
+		n, _ := r.Read(b[:])
+		if n == 0 {
+			break
+		}
+		buf.Write(b[:n])
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("+")) || !bytes.Contains(buf.Bytes(), []byte("echo")) {
+		t.Errorf("ShowCmd should print command to stderr; got %q", buf.String())
+	}
+}
+
+// TestRunStripBakeBinFromPath ensures .bake/bin is removed from PATH so steps see real binaries.
+func TestRunStripBakeBinFromPath(t *testing.T) {
+	dir := t.TempDir()
+	bakeBin := filepath.Join(dir, ".bake", "bin")
+	if err := os.MkdirAll(bakeBin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pathVal := bakeBin + string(filepath.ListSeparator) + os.Getenv("PATH")
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name:  "check",
+				Steps: []config.Step{{Runner: "sh", Argv: []string{"test", "0", "-eq", "0"}}},
+			},
+		},
+	}
+	opts := RunOptions{RootDir: dir, TargetEnv: map[string]string{"PATH": pathVal}}
+	if err := Run(context.Background(), cfg, "check", opts); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunWithDeps(t *testing.T) {
+	dir := t.TempDir()
+	firstDone := filepath.Join(dir, "first.done")
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "first", Steps: []config.Step{{Argv: []string{systemTouch(), firstDone}}}},
+			{Name: "second", Deps: []string{"first"}, Steps: []config.Step{stepTestF(firstDone)}},
 		},
 	}
 	err := Run(context.Background(), cfg, "second", RunOptions{RootDir: dir})
@@ -152,6 +228,32 @@ func TestRunWithInputsOutputsAndTemplate(t *testing.T) {
 	}
 }
 
+// TestRunWithInputsOutputsAndStepEnv exercises stepSignature with step-level Env expansion.
+func TestRunWithInputsOutputsAndStepEnv(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "in"), []byte("x"), 0644)
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name:    "t",
+				Inputs:  []string{"in"},
+				Outputs: []string{"out"},
+				Args:    []config.ArgDecl{{Name: "x", Type: "string", Default: "d"}},
+				Steps: []config.Step{{
+					Argv: []string{"sh", "-c", "cp in out"},
+					Env:  map[string]string{"STEP_VAR": "{{.x}}"},
+				}},
+			},
+		},
+	}
+	opts := RunOptions{RootDir: dir, DeclaredArgs: map[string]string{"x": "val"}}
+	err := Run(context.Background(), cfg, "t", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunWhenEnv(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "ran")
@@ -161,7 +263,7 @@ func TestRunWhenEnv(t *testing.T) {
 			{
 				Name:    "guarded",
 				WhenEnv: "BAKE_TEST_WHEN_SET",
-				Steps:   []config.Step{{Argv: []string{"touch", marker}}},
+				Steps:   []config.Step{{Argv: []string{systemTouch(), marker}}},
 			},
 		},
 	}
@@ -246,13 +348,14 @@ func TestRunWithCacheHitAndMiss(t *testing.T) {
 func TestRunWhenCmd(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "ran")
+	gate := filepath.Join(dir, "gate")
 	cfg := &config.File{
 		RootDir: dir,
 		Targets: []*config.Target{
 			{
 				Name:    "guarded",
-				WhenCmd: []string{"test", "-f", filepath.Join(dir, "gate")},
-				Steps:   []config.Step{{Argv: []string{"touch", marker}}},
+				WhenCmd: []string{"sh", "-c", "test -f '" + strings.ReplaceAll(gate, "'", "'\\''") + "'"},
+				Steps:   []config.Step{{Argv: []string{systemTouch(), marker}}},
 			},
 		},
 	}
@@ -386,6 +489,34 @@ func TestWhyReasons(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected would run (inputs changed), got %v", reasons)
+		}
+	})
+
+	t.Run("inputs changed with prev manifest from LoadManifestForTarget", func(t *testing.T) {
+		sub := t.TempDir()
+		os.WriteFile(filepath.Join(sub, "in"), []byte("newcontent"), 0644)
+		tgt := &config.Target{
+			Name: "t", Inputs: []string{"in"}, Outputs: []string{"out"},
+			Steps: []config.Step{{Argv: []string{"true"}}},
+		}
+		oldKey := cache.Key("t", []byte("oldhash"), []byte("oldsig"))
+		oldManifest := &cache.Manifest{TargetName: "t", InputHash: "old", InputHashes: map[string]string{"in": "old"}, OutputPaths: []string{"out"}}
+		if err := cache.SaveManifest(sub, oldKey, oldManifest); err != nil {
+			t.Fatal(err)
+		}
+		reasons, err := WhyReasons(sub, tgt, RunOptions{RootDir: sub}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasInputsChanged := false
+		for _, r := range reasons {
+			if strings.Contains(r, "inputs changed") {
+				hasInputsChanged = true
+				break
+			}
+		}
+		if !hasInputsChanged {
+			t.Errorf("expected inputs changed (prev from LoadManifestForTarget), got %v", reasons)
 		}
 	})
 }

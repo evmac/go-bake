@@ -24,6 +24,6 @@ func BenchmarkMerge(b *testing.B) {
 	target := map[string]string{"C": "3"}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Merge(process, dotenv, target)
+		_ = Merge(process, dotenv, target, nil)
 	}
 }

@@ -25,6 +25,9 @@ type Target struct {
 	// Desc is a one-line description for --list and help.
 	Desc string
 
+	// Private: if true, target is hidden from --list (and --choose); still runnable by name or as a dep.
+	Private bool
+
 	// Tags for grouping/search (optional).
 	Tags []string
 

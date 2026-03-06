@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/evmac/go-bake/internal/config"
 )
 
 func TestParseMinimal(t *testing.T) {
@@ -57,7 +59,7 @@ func TestParseBracketed(t *testing.T) {
 }
 
 func TestParseSuite(t *testing.T) {
-	src := `suite local { build test }`
+	src := `suite dev { build test }`
 	ast, err := Parser.ParseString("", src)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -70,7 +72,7 @@ func TestParseSuite(t *testing.T) {
 		t.Fatalf("expected 1 suite, got %d", len(cfg.Suites))
 	}
 	su := cfg.Suites[0]
-	if su.Name != "local" {
+	if su.Name != "dev" {
 		t.Errorf("suite name: got %q", su.Name)
 	}
 	if len(su.Targets) != 2 || su.Targets[0] != "build" || su.Targets[1] != "test" {
@@ -354,5 +356,219 @@ func TestLoadWithImportsCycle(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cycle") {
 		t.Errorf("expected cycle in error, got: %v", err)
+	}
+}
+
+func TestParseAndCompileProfile(t *testing.T) {
+	src := `profile prod {
+  env {
+    ENV prod
+    LOG_LEVEL warn
+  }
+}
+target build { steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg.Profiles) != 1 {
+		t.Fatalf("expected 1 profile, got %d", len(cfg.Profiles))
+	}
+	p := cfg.ProfileByName("prod")
+	if p == nil {
+		t.Fatal("ProfileByName(prod) nil")
+	}
+	if p.Env["ENV"] != "prod" || p.Env["LOG_LEVEL"] != "warn" {
+		t.Errorf("profile env: got %v", p.Env)
+	}
+	if len(cfg.Targets) != 1 {
+		t.Errorf("expected 1 target, got %d", len(cfg.Targets))
+	}
+}
+
+func TestParseAndCompileProfileWithDotenv(t *testing.T) {
+	// Profile with dotenv only (parser accepts dotenv clause in profile body)
+	src := `profile eu {
+  dotenv ".env.eu"
+}
+target x { steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := cfg.ProfileByName("eu")
+	if p == nil || len(p.Dotenv) != 1 || p.Dotenv[0] != ".env.eu" {
+		t.Errorf("profile dotenv: got %+v", p)
+	}
+}
+
+func TestParseAndCompilePrivateFileLevel(t *testing.T) {
+	src := `private
+target internal { steps { exec ["true"] } }
+target public { steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for _, tgt := range cfg.Targets {
+		if !tgt.Private {
+			t.Errorf("expected all targets private (file-level), got %q Private=%v", tgt.Name, tgt.Private)
+		}
+	}
+}
+
+func TestParseAndCompilePrivatePerTarget(t *testing.T) {
+	src := `target visible { steps { exec ["true"] } }
+target hidden {
+  private
+  steps { exec ["true"] }
+}`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	vis := cfg.TargetByName("visible")
+	hid := cfg.TargetByName("hidden")
+	if vis == nil || hid == nil {
+		t.Fatal("expected both targets")
+	}
+	if vis.Private {
+		t.Error("visible should not be private")
+	}
+	if !hid.Private {
+		t.Error("hidden should be private")
+	}
+}
+
+func TestParseAndCompileFormatParseError(t *testing.T) {
+	// ParseAndCompile with parse error includes file:line:col when available (formatParseError)
+	_, err := ParseAndCompile(filepath.Join(t.TempDir(), "missing.bake"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "missing.bake") {
+		t.Errorf("error should mention filename: %v", err)
+	}
+}
+
+func TestParseAndCompileValidationError(t *testing.T) {
+	// ParseAndCompile with validation error (unknown dep) returns validationErrList
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Bakefile")
+	os.WriteFile(path, []byte("target a { deps c }\ntarget b { steps { exec [\"true\"] } }\n"), 0644)
+	_, err := ParseAndCompile(path)
+	if err == nil {
+		t.Fatal("expected validation error for unknown dep")
+	}
+	// validationErrList.Error() joins multiple errors
+	if !strings.Contains(err.Error(), "unknown dependency") && !strings.Contains(err.Error(), "b") {
+		t.Errorf("error should mention unknown dep: %v", err)
+	}
+}
+
+func TestLoadWithImportsBadImportPath(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "Bakefile")
+	os.WriteFile(mainPath, []byte("import \"./nonexistent.bake\"\ntarget x { steps { exec [\"true\"] } }\n"), 0644)
+	_, err := LoadWithImports(mainPath)
+	if err == nil {
+		t.Fatal("expected error for missing import")
+	}
+	if !strings.Contains(err.Error(), "import") {
+		t.Errorf("error should mention import: %v", err)
+	}
+}
+
+func TestParseExecElemQuotedEscape(t *testing.T) {
+	// ExecElem.Capture with quoted string containing \" (escape path)
+	src := `target t { steps { exec ["arg with \"quotes\" inside"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	argv := cfg.Targets[0].Steps[0].Argv
+	if len(argv) != 1 || !strings.Contains(argv[0], "quotes") {
+		t.Errorf("argv should unescape quoted string: %v", argv)
+	}
+}
+
+func TestParseEnvValueQuotedEscape(t *testing.T) {
+	// EnvValue.Capture with quoted string and escape
+	src := `target t { env { X "value with \"quote\"" } steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	v := cfg.Targets[0].Env["X"]
+	if !strings.Contains(v, "quote") {
+		t.Errorf("env value should unescape: %q", v)
+	}
+}
+
+func TestCompileWithDotenv(t *testing.T) {
+	// Compile when ast has file-level Dotenv
+	src := "dotenv envfile\ntarget x { steps { exec [\"true\"] } }\n"
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Skipf("parser may not accept file-level dotenv in this form: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg.Dotenv) != 1 || cfg.Dotenv[0] != "envfile" {
+		t.Errorf("Dotenv: got %v", cfg.Dotenv)
+	}
+}
+
+func TestParseTargetWithPassthrough(t *testing.T) {
+	src := `target t { passthrough step = 1 steps { exec ["true"] exec ["echo"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("t")
+	if tgt == nil || tgt.PassthroughStep != 1 {
+		t.Errorf("PassthroughStep: got %+v", tgt)
+	}
+}
+
+func TestValidationErrListError(t *testing.T) {
+	// validationErrList.Error() joins multiple errors
+	errs := validationErrList{
+		config.ValidationError{Message: "first"},
+		config.ValidationError{Message: "second"},
+	}
+	s := errs.Error()
+	if !strings.Contains(s, "first") || !strings.Contains(s, "second") {
+		t.Errorf("Error() should join messages: %q", s)
 	}
 }

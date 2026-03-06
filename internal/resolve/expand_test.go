@@ -56,3 +56,18 @@ func TestExpandInvalidTemplate(t *testing.T) {
 		t.Error("expected error for invalid template")
 	}
 }
+
+func TestExpandArgvInvalidTemplate(t *testing.T) {
+	_, err := ExpandArgv([]string{"ok", "{{.broken"}, map[string]interface{}{"x": "y"})
+	if err == nil {
+		t.Error("expected error from Expand in ExpandArgv")
+	}
+}
+
+func TestExpandEnvInvalidTemplate(t *testing.T) {
+	env := map[string]string{"K": "{{.unclosed"}
+	_, err := ExpandEnv(env, map[string]interface{}{"x": "y"})
+	if err == nil {
+		t.Error("expected error from Expand in ExpandEnv")
+	}
+}

@@ -6,14 +6,22 @@ import (
 	"path/filepath"
 )
 
-// File is the top-level parsed Bakefile: dotenv list, imports, targets, suites.
+// File is the top-level parsed Bakefile: dotenv list, imports, profiles, targets, suites.
 type File struct {
 	Dotenv   []string
-	Imports  []string // paths to other Bakefiles (relative or absolute); resolved and merged at load time
+	Imports  []string  // paths to other Bakefiles (relative or absolute); resolved and merged at load time
+	Profiles []*Profile
 	Targets  []*Target
 	Suites   []*Suite
 	RootDir  string // directory containing Bakefile
 	BakePath string // path to Bakefile
+}
+
+// Profile is a named overlay of dotenv files and env vars (activated by --profile or BAKE_PROFILE).
+type Profile struct {
+	Name   string
+	Dotenv []string         // paths relative to root; loaded when profile is active
+	Env    map[string]string // env overlay when profile is active
 }
 
 // Suite is a named entrypoint listing target names (e.g. local, ci).
@@ -53,6 +61,16 @@ func (f *File) SuiteByName(name string) *Suite {
 	for _, s := range f.Suites {
 		if s.Name == name {
 			return s
+		}
+	}
+	return nil
+}
+
+// ProfileByName returns the profile with the given name, or nil.
+func (f *File) ProfileByName(name string) *Profile {
+	for _, p := range f.Profiles {
+		if p.Name == name {
+			return p
 		}
 	}
 	return nil

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/evmac/go-bake/internal/cache"
 	"github.com/evmac/go-bake/internal/config"
@@ -20,9 +21,11 @@ type RunOptions struct {
 	RootDir      string
 	Dotenv       []string
 	TargetEnv    map[string]string
+	CLIEnv       map[string]string // from --set env.FOO=bar; merged after TargetEnv
 	DeclaredArgs map[string]string // for {{.argName}}
 	LiveArgs     map[string]string // for {{.live.key}}
 	Passthrough  []string          // raw args after "--" to append to passthrough step
+	ShowCmd      bool              // print each command to stderr before running (BAKE_SHOW_CMD or --show-cmd)
 }
 
 // Run builds the DAG, runs dependencies in order, then runs the target's steps.
@@ -48,7 +51,7 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 		if dep == nil {
 			continue
 		}
-		depOpts := RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env}
+		depOpts := RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv}
 		if err := runTargetWithCache(ctx, dep, opts.RootDir, dotenvMap, depOpts); err != nil {
 			return fmt.Errorf("dep %q: %w", name, err)
 		}
@@ -59,11 +62,19 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 // runTargetWithCache runs the target, skipping if incremental cache says up to date.
 func runTargetWithCache(ctx context.Context, tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) error {
 	// When guard: skip target (no-op, success for DAG) if condition is false.
+	targetEnv := opts.TargetEnv
+	if targetEnv == nil {
+		targetEnv = tgt.Env
+	}
 	if len(tgt.WhenCmd) > 0 {
-		mergedEnv := env.Merge(os.Environ(), dotenvMap, tgt.Env)
+		mergedEnv := env.Merge(os.Environ(), dotenvMap, targetEnv, opts.CLIEnv)
+		mergedEnv = stripBakeBinFromPath(mergedEnv, rootDir)
 		cwd := rootDir
 		if tgt.Cwd != "" {
 			cwd = filepath.Join(rootDir, tgt.Cwd)
+		}
+		if opts.ShowCmd {
+			printCmdToStderr("", tgt.WhenCmd)
 		}
 		cmd := exec.CommandContext(ctx, tgt.WhenCmd[0], tgt.WhenCmd[1:]...)
 		cmd.Dir = cwd
@@ -126,11 +137,15 @@ func runTargetWithCache(ctx context.Context, tgt *config.Target, rootDir string,
 
 // stepSignature returns a hash of the target's expanded steps (argv + env) for cache keying.
 func stepSignature(tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) []byte {
+	targetEnv := opts.TargetEnv
+	if targetEnv == nil {
+		targetEnv = tgt.Env
+	}
 	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
-	mergedEnv := env.Merge(os.Environ(), dotenvMap, tgt.Env)
-	if len(data) > 0 && len(tgt.Env) > 0 {
-		exp, _ := resolve.ExpandEnv(tgt.Env, data)
-		mergedEnv = env.Merge(os.Environ(), dotenvMap, exp)
+	mergedEnv := env.Merge(os.Environ(), dotenvMap, targetEnv, opts.CLIEnv)
+	if len(data) > 0 && len(targetEnv) > 0 {
+		exp, _ := resolve.ExpandEnv(targetEnv, data)
+		mergedEnv = env.Merge(os.Environ(), dotenvMap, exp, opts.CLIEnv)
 	}
 	h := sha256.New()
 	for i, step := range tgt.Steps {
@@ -168,16 +183,21 @@ func stepSignature(tgt *config.Target, rootDir string, dotenvMap map[string]stri
 }
 
 func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) error {
+	targetEnv := opts.TargetEnv
+	if targetEnv == nil {
+		targetEnv = tgt.Env
+	}
 	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
-	mergedEnv := env.Merge(os.Environ(), dotenvMap, tgt.Env)
+	mergedEnv := env.Merge(os.Environ(), dotenvMap, targetEnv, opts.CLIEnv)
 	// Expand target-level env if we have template data
-	if len(data) > 0 && len(tgt.Env) > 0 {
-		exp, err := resolve.ExpandEnv(tgt.Env, data)
+	if len(data) > 0 && len(targetEnv) > 0 {
+		exp, err := resolve.ExpandEnv(targetEnv, data)
 		if err != nil {
 			return err
 		}
-		mergedEnv = env.Merge(os.Environ(), dotenvMap, exp)
+		mergedEnv = env.Merge(os.Environ(), dotenvMap, exp, opts.CLIEnv)
 	}
+	mergedEnv = stripBakeBinFromPath(mergedEnv, rootDir)
 	cwd := rootDir
 	if tgt.Cwd != "" {
 		cwd = filepath.Join(rootDir, tgt.Cwd)
@@ -223,11 +243,50 @@ func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dot
 		if step.Cwd != "" {
 			stepCwd = filepath.Join(rootDir, step.Cwd)
 		}
+		if opts.ShowCmd {
+			printCmdToStderr(step.Runner, argv)
+		}
 		if err := runStep(ctx, step.Runner, argv, stepCwd, stepEnv); err != nil {
 			return fmt.Errorf("step %d: %w", i+1, err)
 		}
 	}
 	return nil
+}
+
+// stripBakeBinFromPath returns a copy of envMap with this project's .bake/bin removed
+// from PATH so steps run the real system binaries (e.g. test, act) instead of shims.
+func stripBakeBinFromPath(envMap map[string]string, rootDir string) map[string]string {
+	bakeBin := filepath.Clean(filepath.Join(rootDir, ".bake", "bin"))
+	pathVal, ok := envMap["PATH"]
+	if !ok || pathVal == "" {
+		return envMap
+	}
+	parts := filepath.SplitList(pathVal)
+	var kept []string
+	for _, p := range parts {
+		if filepath.Clean(p) != bakeBin {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == len(parts) {
+		return envMap
+	}
+	out := make(map[string]string, len(envMap))
+	for k, v := range envMap {
+		out[k] = v
+	}
+	out["PATH"] = strings.Join(kept, string(filepath.ListSeparator))
+	return out
+}
+
+// printCmdToStderr writes the command line to os.Stderr (e.g. for --show-cmd / BAKE_SHOW_CMD).
+func printCmdToStderr(runner string, argv []string) {
+	line := joinArgv(argv)
+	if runner != "" {
+		fmt.Fprintf(os.Stderr, "+ %s -c %s\n", runner, line)
+	} else {
+		fmt.Fprintf(os.Stderr, "+ %s\n", line)
+	}
 }
 
 func runStep(ctx context.Context, runner string, argv []string, cwd string, envMap map[string]string) error {

@@ -12,11 +12,41 @@ type Bakefile struct {
 	Entries []*FileEntry `@@*`
 }
 
-// FileEntry is an import, Suite, or Target.
+// FileEntry is an import, Suite, Target, Profile, or file-level private marker.
 type FileEntry struct {
-	Import *ImportLine  `  @@`
-	Suite  *SuiteBlock  `| @@`
-	Target *TargetBlock `| @@`
+	Import  *ImportLine   `  @@`
+	Suite   *SuiteBlock   `| @@`
+	Target  *TargetBlock  `| @@`
+	Profile *ProfileBlock `| @@`
+	Private *PrivateMarker `| @@`
+}
+
+// ProfileBlock is "profile" ident "{" dotenv? env? "}".
+type ProfileBlock struct {
+	Pos  lexer.Position
+	Name string        `"profile" @Ident`
+	Body *ProfileBody  `"{" @@ "}"`
+}
+
+// ProfileBody contains dotenv and env entries.
+type ProfileBody struct {
+	Entries []*ProfileBodyEntry `@@*`
+}
+
+// ProfileBodyEntry is dotenv clause or env block.
+type ProfileBodyEntry struct {
+	Dotenv *ProfileDotenvClause `  @@`
+	Env    *EnvBlock            `| @@`
+}
+
+// ProfileDotenvClause is "dotenv" followed by path strings.
+type ProfileDotenvClause struct {
+	Paths []ExecElem `"dotenv" ( @Ident | @String )*`
+}
+
+// PrivateMarker is "private" at file level; all targets in this file are private.
+type PrivateMarker struct {
+	Pos lexer.Position `"private"`
 }
 
 // ImportLine is "import" string (path to another Bakefile).
@@ -49,7 +79,7 @@ type TargetBody struct {
 	Entries []*BodyEntry `@@*`
 }
 
-// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when.
+// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private.
 type BodyEntry struct {
 	Deps        *DepsClause        `  @@`
 	Steps       *StepsBlock        `| @@`
@@ -64,6 +94,12 @@ type BodyEntry struct {
 	Outputs     *OutputsClause     `| @@`
 	WhenEnv     *WhenEnvClause     `| @@`
 	WhenCmd     *WhenCmdClause     `| @@`
+	Private     *PrivateClause     `| @@`
+}
+
+// PrivateClause is "private" inside a target; target is hidden from --list.
+type PrivateClause struct {
+	Pos lexer.Position `"private"`
 }
 
 // WhenEnvClause is "when" "env" ident — condition: env var is set (non-empty).

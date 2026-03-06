@@ -85,3 +85,26 @@ func TestParseArgsRequiredMissing(t *testing.T) {
 		t.Fatal("expected error for required arg missing")
 	}
 }
+
+func TestParseArgsShortUndeclared(t *testing.T) {
+	// -x value when no arg has short "x" -> live["x"] = value (findDeclaredByShort returns "")
+	tgt := &config.Target{Args: []config.ArgDecl{{Name: "env", Type: "string", Short: "e"}}}
+	_, live, _, err := ParseArgs(tgt, []string{"-x", "val"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live["x"] != "val" {
+		t.Errorf("short -x should go to live: %v", live)
+	}
+}
+
+func TestParseArgsBareDoubleDashFlag(t *testing.T) {
+	tgt := &config.Target{Args: []config.ArgDecl{{Name: "v", Type: "bool"}}}
+	declared, _, _, err := ParseArgs(tgt, []string{"--v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared["v"] != "true" {
+		t.Errorf("bare --v should set true: %v", declared)
+	}
+}

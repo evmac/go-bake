@@ -3,9 +3,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: ["trunk"]
   pull_request:
-    branches: [main, master]
+    branches: ["*"]
 
 jobs:
   ci:
@@ -19,10 +19,17 @@ jobs:
         with:
           go-version: "stable"
 
-      - name: Run bake ci
-        run: go run ./cmd/bake ci
+      - name: Set up Bake
+        run: |
+          go build -o bin/bake ./cmd/bake
+          ./bin/bake install
+          echo "${{ github.workspace }}/.bake/bin" >> $GITHUB_PATH
+
+      - name: Run CI suite
+        run: ci
 
       - name: Upload coverage
+        if: env.ACTIONS_RUNTIME_TOKEN != ''
         uses: actions/upload-artifact@v4
         with:
           name: coverage

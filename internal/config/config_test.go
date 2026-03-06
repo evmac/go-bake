@@ -26,10 +26,10 @@ func TestDefaultTargetName(t *testing.T) {
 
 func TestSuiteByName(t *testing.T) {
 	cfg := &File{
-		Suites: []*Suite{{Name: "local", Targets: []string{"build"}}, {Name: "ci", Targets: []string{"build", "test"}}},
+		Suites: []*Suite{{Name: "dev", Targets: []string{"build"}}, {Name: "ci", Targets: []string{"build", "test"}}},
 	}
-	if s := cfg.SuiteByName("local"); s == nil || s.Name != "local" || len(s.Targets) != 1 {
-		t.Errorf("SuiteByName(local): %+v", s)
+	if s := cfg.SuiteByName("dev"); s == nil || s.Name != "dev" || len(s.Targets) != 1 {
+		t.Errorf("SuiteByName(dev): %+v", s)
 	}
 	if s := cfg.SuiteByName("ci"); s == nil || len(s.Targets) != 2 {
 		t.Errorf("SuiteByName(ci): %+v", s)

@@ -49,7 +49,7 @@ func TestMerge(t *testing.T) {
 	processEnv := []string{"P=process", "SHARED=from_process"}
 	dotenv := map[string]string{"D": "dot", "SHARED": "from_dotenv"}
 	targetEnv := map[string]string{"T": "target", "SHARED": "from_target"}
-	got := Merge(processEnv, dotenv, targetEnv)
+	got := Merge(processEnv, dotenv, targetEnv, nil)
 	want := map[string]string{
 		"P":      "process",
 		"D":      "dot",
@@ -58,6 +58,19 @@ func TestMerge(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v want %v", got, want)
+	}
+	// CLI env overrides target
+	cliEnv := map[string]string{"SHARED": "from_cli", "C": "cli"}
+	got = Merge(processEnv, dotenv, targetEnv, cliEnv)
+	want = map[string]string{
+		"P":      "process",
+		"D":      "dot",
+		"T":      "target",
+		"SHARED": "from_cli",
+		"C":      "cli",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("with cliEnv: got %v want %v", got, want)
 	}
 }
 

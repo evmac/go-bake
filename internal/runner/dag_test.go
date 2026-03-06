@@ -46,3 +46,20 @@ func TestTopoOrderUnknownDep(t *testing.T) {
 		t.Fatal("expected error for unknown dep")
 	}
 }
+
+func TestAllEdges(t *testing.T) {
+	cfg := &config.File{
+		Targets: []*config.Target{
+			{Name: "a", Deps: []string{"b", "c"}},
+			{Name: "b", Deps: []string{"c"}},
+			{Name: "c", Deps: nil},
+		},
+	}
+	edges := AllEdges(cfg)
+	if len(edges) != 3 {
+		t.Fatalf("expected 3 nodes, got %d", len(edges))
+	}
+	if len(edges["a"]) != 2 || len(edges["b"]) != 1 || len(edges["c"]) != 0 {
+		t.Errorf("edges: got %v", edges)
+	}
+}

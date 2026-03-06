@@ -10,10 +10,10 @@ How we run tests, measure coverage, and what to do when something breaks.
 bake test
 ```
 
-This builds the binary (if needed) and runs `go test ./...`. Use the **local** suite for day-to-day work:
+This builds the binary (if needed) and runs `go test ./...`. Use the **dev** suite for day-to-day work:
 
 ```bash
-bake local    # build, test, list
+bake dev      # build, format, test
 bake test     # build + test only
 ```
 
@@ -52,13 +52,17 @@ go tool cover -html=coverage.out
 # opens in browser; red = uncovered
 ```
 
+**Coverage targets:**
+
+- **Overall:** aim for **>80%** coverage across all packages (`go test ./... -cover`).
+- **Per package:** aim for **>90%** where practical (e.g. `internal/dsl`, `internal/runner`, `internal/config`, `internal/resolve`, `internal/cache`). Use coverage as a guide when adding or changing code.
+- **cmd/bake:** tests are integration-level only (RunMain, real Bakefiles, exit codes). It’s fine for this package to sit below the usual per-package threshold; focus on covering behaviour rather than a number.
+
 **Praxis:**
 
 - Run `-cover` before pushing to spot regressions.
 - Use `-html` when adding a feature or fixing a bug to see which branches you missed.
 - Coverage is produced in CI (see below); check the workflow run or artifact if you want numbers after a push.
-
-We don’t enforce a minimum percentage. The goal is to cover behaviour that matters (cache, why, CLI, parser) and to use coverage as a guide, not a target.
 
 ## Writing tests
 

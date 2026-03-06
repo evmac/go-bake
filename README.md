@@ -27,6 +27,18 @@ git clone https://github.com/evmac/go-bake && cd go-bake && go build -o bin/bake
 Create a `Bakefile` in your project root:
 
 ```bake
+profile prod {
+  env {
+    GOOS linux
+    GOARCH amd64
+  }
+}
+
+target deploy {
+  deps build
+  exec ["deploy.sh", "{{.env}}", "{{.dry_run}}"]
+}
+
 target build {
   desc "build the binary"
   exec ["go", "build", "-o", "bin/app", "./cmd/app"]
@@ -37,7 +49,7 @@ target test {
   exec ["go", "test", "./..."]
 }
 
-suite local { build test }
+suite local { build format test }
 suite ci { build test }
 ```
 
@@ -48,6 +60,17 @@ Then:
 - `bake test` — run `build` then `test`
 - `bake ci` — run the ci suite (build, test)
 - `bake install` — create `.bake/bin` shims so you can run `build` / `test` from PATH
+
+## CI
+
+The [CI workflow](.github/workflows/ci.yml) runs on push/PR. To run it locally with [act](https://github.com/nektos/act) (requires Docker and `brew install act`):
+
+```bash
+bake act
+# or: act push
+```
+
+The project’s [.actrc](.actrc) pins the runner image so Go and the workflow run correctly.
 
 ## Docs
 

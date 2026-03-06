@@ -58,7 +58,8 @@ func readEnvFile(path string) (map[string]string, error) {
 }
 
 // Merge overlays envs in order; later maps override earlier. Process env is the base.
-func Merge(processEnv []string, dotenv, targetEnv map[string]string) map[string]string {
+// If cliEnv is non-nil, it is applied last (from --set env.FOO=bar).
+func Merge(processEnv []string, dotenv, targetEnv, cliEnv map[string]string) map[string]string {
 	// Parse process env into map
 	base := make(map[string]string)
 	for _, s := range processEnv {
@@ -72,6 +73,11 @@ func Merge(processEnv []string, dotenv, targetEnv map[string]string) map[string]
 	}
 	for k, v := range targetEnv {
 		base[k] = v
+	}
+	if cliEnv != nil {
+		for k, v := range cliEnv {
+			base[k] = v
+		}
 	}
 	return base
 }

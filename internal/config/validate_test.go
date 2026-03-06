@@ -40,10 +40,46 @@ func TestValidateDuplicateTarget(t *testing.T) {
 	}
 }
 
+func TestProfileByName(t *testing.T) {
+	cfg := &File{
+		Targets: []*Target{{Name: "build"}},
+		Profiles: []*Profile{
+			{Name: "prod", Env: map[string]string{"ENV": "prod"}},
+			{Name: "staging"},
+		},
+	}
+	if p := cfg.ProfileByName("prod"); p == nil || p.Env["ENV"] != "prod" {
+		t.Errorf("ProfileByName(prod): got %v", p)
+	}
+	if p := cfg.ProfileByName("staging"); p == nil || p.Name != "staging" {
+		t.Errorf("ProfileByName(staging): got %v", p)
+	}
+	if cfg.ProfileByName("missing") != nil {
+		t.Error("ProfileByName(missing) should be nil")
+	}
+}
+
+func TestValidateDuplicateProfile(t *testing.T) {
+	cfg := &File{
+		Targets: []*Target{{Name: "build"}},
+		Profiles: []*Profile{
+			{Name: "prod"},
+			{Name: "prod"},
+		},
+	}
+	errs := Validate(cfg)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "duplicate profile") || !strings.Contains(errs[0].Message, "prod") {
+		t.Errorf("unexpected message: %s", errs[0].Message)
+	}
+}
+
 func TestValidateSuiteUnknownTarget(t *testing.T) {
 	cfg := &File{
 		Targets: []*Target{{Name: "build"}},
-		Suites:  []*Suite{{Name: "local", Targets: []string{"build", "deploy"}, Line: 2, Column: 1}},
+		Suites:  []*Suite{{Name: "dev", Targets: []string{"build", "deploy"}, Line: 2, Column: 1}},
 	}
 	errs := Validate(cfg)
 	if len(errs) != 1 {

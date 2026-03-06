@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`. Comments: `#` to end of line.
+A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`. Comments: `#` to end of line. Run **`bake format`** or **`bake fmt`** (optionally with **`-w`**) to normalize indentation and clause order.
 
 ## File structure
 
@@ -106,11 +106,11 @@ target deploy {
 ## Suites
 
 ```bake
-suite local { build test deploy }
+suite dev { build test deploy }
 suite ci { build lint test }
 ```
 
-`--list` is filtered by the active suite (local, or ci when `CI=1` or `--ci`). Running `bake ci` runs all targets in the `ci` suite.
+`--list` is filtered by the active suite (dev, or ci when `CI=1` or `--ci`). Running `bake ci` runs all targets in the `ci` suite.
 
 ## Cwd, desc, tags
 

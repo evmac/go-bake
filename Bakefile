@@ -24,7 +24,7 @@ target format {
 
 target list {
   desc "list targets (alias for --list)"
-  steps { exec ["go", "run", "./cmd/bake", "--list"] }
+  exec ["go", "run", "./cmd/bake", "--list"]
 }
 
 suite local {
@@ -33,4 +33,9 @@ suite local {
 
 suite ci {
   build test-cover
+}
+
+target act {
+  desc "run CI workflow locally with act (requires Docker + act: brew install act)"
+  exec ["act", "push"]
 }

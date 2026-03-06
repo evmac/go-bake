@@ -123,6 +123,63 @@ func TestLoadManifestForTarget(t *testing.T) {
 	}
 }
 
+func TestLoadManifestForTargetNoCacheDir(t *testing.T) {
+	dir := t.TempDir()
+	// No .bake/cache created - ReadDir returns IsNotExist, so (nil, nil)
+	found, err := LoadManifestForTarget(dir, "any")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != nil {
+		t.Errorf("expected nil when cache dir missing, got %+v", found)
+	}
+}
+
+func TestLoadManifestForTargetWrongTarget(t *testing.T) {
+	dir := t.TempDir()
+	key := Key("other", []byte("h"), []byte("s"))
+	SaveManifest(dir, key, &Manifest{TargetName: "other", InputHash: "h"})
+	found, err := LoadManifestForTarget(dir, "wanted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != nil {
+		t.Errorf("expected nil when no matching target, got %+v", found)
+	}
+}
+
+func TestLoadManifestForTargetSkipsInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, ".bake", "cache")
+	os.MkdirAll(cacheDir, 0755)
+	os.WriteFile(filepath.Join(cacheDir, "bad.json"), []byte("not json"), 0644)
+	key := Key("t", []byte("h"), []byte("s"))
+	SaveManifest(dir, key, &Manifest{TargetName: "t", InputHash: "h"})
+	found, err := LoadManifestForTarget(dir, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || found.TargetName != "t" {
+		t.Errorf("should skip bad.json and find t: %+v", found)
+	}
+}
+
+func TestLoadManifestForTargetSkipsDirs(t *testing.T) {
+	dir := t.TempDir()
+	key := Key("t", []byte("h"), []byte("s"))
+	SaveManifest(dir, key, &Manifest{TargetName: "t", InputHash: "h"})
+	// Add a directory named like a .json file so we hit e.IsDir() continue path
+	cacheDir := filepath.Join(dir, ".bake", "cache")
+	os.MkdirAll(filepath.Join(cacheDir, "ignore.json"), 0755)
+	found, err := LoadManifestForTarget(dir, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || found.TargetName != "t" {
+		t.Errorf("should skip dir and find t: %+v", found)
+	}
+}
+
 func TestOutputsExist(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a"), nil, 0644)

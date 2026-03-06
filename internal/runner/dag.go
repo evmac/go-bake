@@ -33,3 +33,12 @@ func TopoOrder(cfg *config.File, targetName string) ([]string, error) {
 	}
 	return order, nil
 }
+
+// AllEdges returns the full dependency graph: map from target name to its direct deps.
+func AllEdges(cfg *config.File) map[string][]string {
+	out := make(map[string][]string)
+	for _, t := range cfg.Targets {
+		out[t.Name] = append([]string(nil), t.Deps...)
+	}
+	return out
+}

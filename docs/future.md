@@ -25,20 +25,26 @@ See the container/compose plan for architecture (containers, daemons, lifecycle,
 - [x] **Conditionals (when)** — Run a target only when a condition holds; skip (no-op) otherwise. Form: `when env VAR` or `when cmd ["prog", "args"]`. Dependencies still resolved; guard evaluated before target steps.
 - [x] **Test coverage** — tests updated to improve coverage and integrate with CI.
 
-## v1.3 — Profiles, CLI, and formatter
+## v1.3 — Profiles, CLI, formatter, and discoverability
 
-- [ ] **Profiles as overlays** — First-class profile overlays (base → profile → CLI).
-- [ ] **Override via CLI** — `--set env.FOO=bar` (explicit flag). Use case: one-off env/args for a run without editing the Bakefile. See [Parameterization](parameterization.md) (passthrough vs overrides vs variants).
-- [ ] **Ordering and formatter** — The order stateful entities appear is execution order. Formatter (add or extend) auto-orders entities; **`--check`** verifies Bakefiles are ordered. Checks run before integration (e.g. before baked).
-- [ ] **CI ergonomics** — Timing breakdown, artifact summaries.
+- [x] **Profiles as overlays** — First-class profile overlays (base → profile → CLI).
+- [x] **Override via CLI** — `--set env.FOO=bar` (explicit flag). Use case: one-off env/args for a run without editing the Bakefile. See [Parameterization](parameterization.md) (passthrough vs overrides vs variants).
+- [x] **Ordering and formatter** — The order stateful entities appear is execution order. Formatter (add or extend) auto-orders entities; **`--check`** verifies Bakefiles are ordered. Checks run before integration (e.g. before baked).
+- [x] **Interactive picker** — `--choose`: menu to select a target; when not a TTY, emit list (one per line) so it can be piped to fzf or similar.
+- [x] **Private targets** — Targets hidden from `--list` (per-target or file-level `private` at top of Bakefile); only callable as deps or by explicit name.
+- [x] **Dependency graph** — `--graph` [format]: emit target dependency graph (e.g. DOT or JSON) for visualization or tooling.
+- [x] **Reverse deps** — `--what-depends-on <target>`: list targets that depend on the given target (refactoring and impact analysis).
+- [x] **List with status** — Optional `--list` output showing per-target incremental status (would run / skipped) when useful.
 
-## v1.4 — Passthrough, variants, concurrency, CI, and JSON output
+## v1.4 — Passthrough, variants, concurrency, watch, CI, and JSON output
 
 Normalized use cases: [Parameterization](parameterization.md) (passthrough · overrides · variants).
 
 - [ ] **Structured passthrough** — Declare passthrough target per step; named channels.
 - [ ] **Target variant block** — Define named variants on a target (e.g. `bake test` vs `bake test cover`); codified in Bakefile, no separate target. See [Parameterization](parameterization.md).
 - [ ] **Concurrency controls** — Per-task pools, `--max-parallel`, mutex for shared resources.
+- [ ] **CI ergonomics** — Timing breakdown, artifact summaries.
+- [ ] **Watch mode** — `bake --watch <target>`: re-run target (and deps as needed) when inputs change; dev ergonomics, local-first.
 - [ ] **Machine-readable output** — `--json` event stream.
 
 ## v1.5 — Containerization support
@@ -61,20 +67,31 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 
 - [ ] **baked** — Background daemon: target lifecycles, containers, error/recovery, caching, shim updates. Run-once semantics; watches Bakefile(s), integrates on disk updates. Queueing and prioritization; Bakefile format checks. Big lift.
 
-## v1.9 — VS Code extension and release CI
+## v1.9 — Namespacing and import scope
 
-- [ ] **Bake syntax extension** — TextMate grammar for Bakefiles (`.bake`, `Bakefile`): keywords, comments, strings, templates `{{.…}}`, punctuation. Extension source in go-bake under `editors/vscode-bake/`.
-- [ ] **Extension repo and publish** — Separate repo (e.g. vscode-bake) with CI that builds and publishes the extension on each go-bake release; version aligned with go-bake. Trigger from go-bake release workflow via `repository_dispatch`.
+- [ ] **Import namespacing** — Prefix or namespace for targets, suites, and profiles from imported Bakefiles (e.g. qualified reference so imports don’t pollute the global name space).
+- [ ] **Import scope / visibility** — Limit each Bakefile so it only has access to commands (targets, suites, profiles) defined in that file and in all Bakefiles it imports (transitively). A file cannot reference items defined in files that import it (“above” the current file). Entry point (main Bakefile) sees itself plus its import tree; an imported file’s references are validated against itself plus its own imports only.
 
 ---
 
 ## Later / backlog
 
-- **Import namespacing** — Prefix or namespace targets/suites from imported Bakefiles; deferred to a future release.
 - **Plugin system** — Pushed down the roadmap; not in scope for early v1.x. We avoid design decisions that would preclude a plugin system later.
 - **Remote cache / artifacts** — Content-hash cache, optional remote.
 - **Make → Bake conversion** — Script or mapping guide.
 - **Docker-Compose → Bake conversion** — Script or mapping guide.
 - **Windows first-class** — Execution and testing on Windows.
 - **Idempotency / caching for agents** — Content-hash cache keyed by inputs + params.
+- **`--dump`** — Emit parsed/resolved config (targets, deps, env, args) without executing; complements `--explain` / `--dry-run` for tooling and AI.
+- **Output control** — `--quiet` (only task names/errors) and/or `--verbose` (full env/argv) for step output; CI and script friendliness.
+- **Target output as input** — Use another target’s stdout as input (env or stdin) to a step; toolchain flows without ad-hoc files.
+- **Filter by scope** — Run only targets matching a path or tag (e.g. “targets touching `./app/`” or tag `frontend`); ad-hoc slice for large repos.
+- **List with deps** — `--list --deps` (or similar): show each target’s deps next to it in the list.
+- **when os / when arch** — Platform conditionals (e.g. `when os linux`, `when arch amd64`) in addition to `when env` / `when cmd`.
 
+--
+
+## VS Code extension and release CI
+
+- [ ] **Bake syntax extension** — TextMate grammar for Bakefiles (`.bake`, `Bakefile`): keywords, comments, strings, templates `{{.…}}`, punctuation. Extension source in go-bake under `editors/vscode-bake/`.
+- [ ] **Extension repo and publish** — Separate repo (e.g. vscode-bake) with CI that builds and publishes the extension on each go-bake release; version aligned with go-bake. Trigger from go-bake release workflow via `repository_dispatch`.

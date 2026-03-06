@@ -5,8 +5,8 @@ Three distinct ways to vary how a target runs. They solve different use cases an
 | Mechanism | Use case | Who supplies the value | Status |
 |-----------|----------|-------------------------|--------|
 | **Passthrough** | Ad-hoc: “this run, I want to add arbitrary args to the step.” | Caller at invoke time (after `--`) | Implemented |
-| **Overrides** | One-off: “this run, use different env or declared args without editing the Bakefile.” | Caller via CLI flags (e.g. `--set env.FOO=bar`) | Planned |
-| **Target variants** | Codified: “we have named ways we run this target; CI/suites should say ‘run test with cover’.” | Bakefile defines names and their argv/env | Planned |
+| **Overrides** | One-off: “this run, use different env or declared args without editing the Bakefile.” | Caller via CLI flags (e.g. `--set env.FOO=bar`) | Implemented |
+| **Target variants** | Codified: “we have named ways we run this target; CI/suites should say ‘run test with cover’.” | Bakefile defines names and their argv/env | Implemented |
 
 ---
 
@@ -26,7 +26,7 @@ Three distinct ways to vary how a target runs. They solve different use cases an
 
 **Use case:** Override env vars or declared args for a single run from the CLI (e.g. `bake deploy --set env.ENV=prod --set args.region=eu`). Same target definition; different inputs for this run.
 
-**How (planned):** CLI flag such as `--set env.FOO=bar` or `--set args.NAME=value`. Values apply to the run; they don’t change the Bakefile.
+**How:** CLI flag such as `--set env.FOO=bar` or `--set args.NAME=value`. Values apply to the run; they don’t change the Bakefile.
 
 **Good for:** Switching env (prod/staging), toggling a declared arg, CI secrets or env without editing the Bakefile.
 
@@ -51,7 +51,7 @@ Three distinct ways to vary how a target runs. They solve different use cases an
 ## Summary
 
 - **Passthrough** — Caller appends raw argv this run. Implemented.
-- **Overrides** — Caller sets env/args this run via `--set`. Planned.
+- **Overrides** — Caller sets env/args this run via `--set`. Implemented.
 - **Variants** — Bakefile defines named presets for a target; caller picks one (e.g. `bake test cover`). Planned.
 
 See the [future roadmap](future.md) for where overrides and variants are scheduled.

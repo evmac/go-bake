@@ -61,6 +61,21 @@ func Validate(cfg *File) []ValidationError {
 		}
 	}
 
+	// Duplicate profile names
+	seenProfile := make(map[string]int)
+	for _, p := range cfg.Profiles {
+		if first, ok := seenProfile[p.Name]; ok {
+			errs = append(errs, ValidationError{
+				Filename: filename,
+				Line:     0,
+				Column:   0,
+				Message:  fmt.Sprintf("duplicate profile %q (first at line %d)", p.Name, first),
+			})
+		} else {
+			seenProfile[p.Name] = 0
+		}
+	}
+
 	// Duplicate suite names
 	seenSuite := make(map[string]int)
 	for _, s := range cfg.Suites {
