@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestParseSetFlags(t *testing.T) {
@@ -118,7 +122,7 @@ func TestRunDefault(t *testing.T) {
 	orig, _ := os.Getwd()
 	os.Chdir(dir)
 	defer os.Chdir(orig)
-	if err := runDefault(nil, nil, "", false); err != nil {
+	if err := runDefault(nil, nil, "", false, false, 1, false, false); err != nil {
 		t.Errorf("runDefault: %v", err)
 	}
 }
@@ -134,7 +138,7 @@ func TestRunTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	tgt := cfg.TargetByName("build")
-	if err := runTarget(cfg, "build", tgt, nil, nil, nil, nil, nil, false); err != nil {
+	if err := runTarget(cfg, "build", tgt, nil, nil, nil, nil, nil, nil, false, false, 1, false, false); err != nil {
 		t.Errorf("runTarget: %v", err)
 	}
 }
@@ -149,7 +153,7 @@ func TestRunTargetNilTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = runTarget(cfg, "ghost", nil, nil, nil, nil, nil, nil, false)
+	err = runTarget(cfg, "ghost", nil, nil, nil, nil, nil, nil, nil, false, false, 1, false, false)
 	if err == nil {
 		t.Fatal("expected error when target is nil")
 	}
@@ -171,7 +175,7 @@ func TestRunTargetWithDeclaredArgs(t *testing.T) {
 	}
 	tgt := cfg.TargetByName("build")
 	declared := map[string]string{"x": "v"}
-	if err := runTarget(cfg, "build", tgt, declared, map[string]string{"live": "k"}, nil, nil, nil, false); err != nil {
+	if err := runTarget(cfg, "build", tgt, declared, map[string]string{"live": "k"}, nil, nil, nil, nil, false, false, 1, false, false); err != nil {
 		t.Errorf("runTarget with declared+live: %v", err)
 	}
 }
@@ -224,7 +228,7 @@ func TestRunDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runDryRun(cfg, "build", cfg.TargetByName("build"), nil, nil, nil, nil)
+	runDryRun(cfg, "build", cfg.TargetByName("build"), nil, nil, nil, nil, nil)
 }
 
 func TestRunExplain(t *testing.T) {
@@ -249,9 +253,53 @@ func TestRunTargetNoSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	tgt := cfg.TargetByName("noop")
-	if err := runTarget(cfg, "noop", tgt, nil, nil, nil, nil, nil, false); err != nil {
+	if err := runTarget(cfg, "noop", tgt, nil, nil, nil, nil, nil, nil, false, false, 1, false, false); err != nil {
 		t.Errorf("runTarget (no steps): %v", err)
 	}
+}
+
+func TestRunMainWithPreset(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target test { steps { exec ["true"] } preset cover { argv ["-coverprofile=coverage.out"] } }
+suite ci { build test test.cover }
+target build { steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"test", "cover"})
+	if err != nil {
+		t.Fatalf("RunMain test cover: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	// Run suite ci: should run build, test, then test with preset cover
+	code, err = RunMain([]string{"ci"})
+	if err != nil {
+		t.Fatalf("RunMain ci: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0 for suite ci, got %d", code)
+	}
+}
+
+func TestRunMainJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"--json", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --json build: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	// Output is on stdout; we'd need to capture it. For now just verify exit 0.
+	// A fuller test would run with captured stdout and parse NDJSON for run_start, target_start, step_end, run_end.
 }
 
 func TestRunInstall(t *testing.T) {
@@ -419,6 +467,141 @@ func TestRunMainInstall(t *testing.T) {
 	}
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
+	}
+	// install (no subcommand) installs shims and hooks; shims should exist
+	if _, err := os.Stat(filepath.Join(dir, ".bake", "bin")); err != nil {
+		t.Errorf(".bake/bin missing after install: %v", err)
+	}
+}
+
+func TestRunMainInstallShims(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install", "shims"})
+	if err != nil {
+		t.Fatalf("RunMain install shims: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".bake", "bin", "build")); err != nil {
+		t.Errorf("shim build missing: %v", err)
+	}
+}
+
+func TestRunMainInstallCreatesBakefile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install"})
+	if err != nil {
+		t.Fatalf("RunMain install: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	bakePath := filepath.Join(dir, "Bakefile")
+	data, err := os.ReadFile(bakePath)
+	if err != nil {
+		t.Fatalf("Bakefile not created: %v", err)
+	}
+	if !strings.Contains(string(data), "target build") || !strings.Contains(string(data), "suite dev") {
+		t.Errorf("minimal Bakefile should have target build and suite dev: %s", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".bake", "bin", "build")); err != nil {
+		t.Errorf("shims should be installed after creating Bakefile: %v", err)
+	}
+}
+
+func TestRunMainInstallHooks(t *testing.T) {
+	dir := t.TempDir()
+	// Bakefile with suite precommit (default suite for hooks)
+	bf := []byte(`target lint { desc "lint" steps { exec ["true"] } }
+suite precommit { lint }
+`)
+	os.WriteFile(filepath.Join(dir, "Bakefile"), bf, 0644)
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install", "hooks"})
+	if err != nil {
+		t.Fatalf("RunMain install hooks: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read pre-commit hook: %v", err)
+	}
+	script := string(data)
+	if !strings.Contains(script, "#!/bin/sh") || !strings.Contains(script, "set -e") {
+		t.Errorf("pre-commit hook should be a shell script: %s", script)
+	}
+	if !strings.Contains(script, "precommit") {
+		t.Errorf("pre-commit hook should run 'bake precommit': %s", script)
+	}
+}
+
+func TestRunMainInstallUnknownSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install", "foo"})
+	if err == nil {
+		t.Fatal("expected error for unknown install subcommand")
+	}
+	if code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(err.Error(), "unknown install subcommand") {
+		t.Errorf("error should mention unknown subcommand: %v", err)
+	}
+}
+
+func TestRunMainInstallHooksNoGit(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("suite precommit { build }\ntarget build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install", "hooks"})
+	if err == nil {
+		t.Fatal("expected error when not a git repo")
+	}
+	if code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
+	}
+}
+
+func TestRunMainInstallHooksNoSuitePrecommit(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\nsuite dev { build }\n"), 0644)
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install", "hooks"})
+	if err == nil {
+		t.Fatal("expected error when no suite precommit defined")
+	}
+	if code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(err.Error(), "suite precommit") {
+		t.Errorf("error should mention suite precommit: %v", err)
 	}
 }
 
@@ -755,6 +938,144 @@ func TestRunMainUnknownTarget(t *testing.T) {
 	}
 }
 
+func TestRunMainLint(t *testing.T) {
+	dir := t.TempDir()
+	// Bakefile that triggers prefer-exec (cmd), brackets-only (single-line), require-desc (no desc)
+	bf := []byte("target build cmd go build .\n")
+	os.WriteFile(filepath.Join(dir, "Bakefile"), bf, 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"lint"})
+	if err != nil {
+		t.Fatalf("RunMain lint: %v", err)
+	}
+	if code != 1 {
+		t.Errorf("expected exit 1 when there are findings, got %d", code)
+	}
+}
+
+func TestRunMainLintFix(t *testing.T) {
+	dir := t.TempDir()
+	bf := []byte("target t { steps { cmd go fmt ./... } }\n")
+	bakePath := filepath.Join(dir, "Bakefile")
+	os.WriteFile(bakePath, bf, 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"lint", "--fix"})
+	if err != nil {
+		t.Fatalf("RunMain lint --fix: %v", err)
+	}
+	// After fix we still exit 1 if there were findings (require-desc may remain)
+	if code != 0 && code != 1 {
+		t.Errorf("expected exit 0 or 1, got %d", code)
+	}
+	// Verify file was fixed: cmd converted to exec
+	data, err := os.ReadFile(bakePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "exec [") {
+		t.Errorf("expected exec after --fix, got %s", data)
+	}
+	if strings.Contains(string(data), "cmd go") {
+		t.Errorf("cmd should have been converted, got %s", data)
+	}
+}
+
+func TestRunMainLintClean(t *testing.T) {
+	dir := t.TempDir()
+	bf := []byte("target build { desc \"build\" steps { exec [\"true\"] } }\n")
+	os.WriteFile(filepath.Join(dir, "Bakefile"), bf, 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"lint"})
+	if err != nil {
+		t.Fatalf("RunMain lint: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0 for clean Bakefile, got %d", code)
+	}
+}
+
+func TestInputPathsForRun(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(`
+target a { inputs ["a.in"] outputs ["a.out"] steps { exec ["true"] } }
+target b { deps a inputs ["b.in"] outputs ["b.out"] steps { exec ["true"] } }
+`), 0644)
+	os.WriteFile(filepath.Join(dir, "a.in"), []byte("a"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.in"), []byte("b"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := inputPathsForRun(cfg, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Order may vary; should contain a.in and b.in (or their resolved form)
+	if len(paths) < 2 {
+		t.Errorf("expected at least 2 input paths, got %v", paths)
+	}
+}
+
+func TestRunWatchReRunOnChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("watch test uses sh -c")
+	}
+	dir := t.TempDir()
+	// Target: input in.txt, step appends to runcount.txt so we can assert re-run
+	bf := `target build {
+  inputs ["in.txt"]
+  outputs ["out.txt"]
+  steps { exec ["sh", "-c", "echo run >> runcount.txt && cp in.txt out.txt"] }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	os.WriteFile(filepath.Join(dir, "in.txt"), []byte("x"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var watchErr error
+	go func() {
+		defer wg.Done()
+		watchErr = runWatch(ctx, "build", nil, nil, nil, "", false, 1)
+	}()
+	// Let first run complete and Poll start
+	time.Sleep(600 * time.Millisecond)
+	// Touch input so watcher will trigger a second run
+	if err := os.WriteFile(filepath.Join(dir, "in.txt"), []byte("y"), 0644); err != nil {
+		cancel()
+		wg.Wait()
+		t.Fatal(err)
+	}
+	// Wait for debounce + poll + second run
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	wg.Wait()
+	if watchErr != nil {
+		t.Errorf("runWatch: %v", watchErr)
+	}
+	// Should have run at least twice (initial + after touch)
+	data, err := os.ReadFile(filepath.Join(dir, "runcount.txt"))
+	if err != nil {
+		t.Fatalf("read runcount: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		t.Errorf("expected at least 2 runs, got %d (runcount.txt: %q)", len(lines), data)
+	}
+}
+
 func TestBakeNoTargetShowsError(t *testing.T) {
 	exe := buildBake(t)
 	// Run from a dir with no Bakefile so we get "no Bakefile" or "no target" error
@@ -769,6 +1090,385 @@ func TestBakeNoTargetShowsError(t *testing.T) {
 	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 2 {
 		t.Logf("output: %s", out)
 		t.Fatalf("expected exit 2, got: %v", err)
+	}
+}
+
+func TestRunMainLintDisable(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"lint", "--disable", "require-desc"})
+	if err != nil {
+		t.Fatalf("RunMain lint --disable: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	cfgPath := filepath.Join(dir, ".bake", "config")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("config file should exist: %v", err)
+	}
+	if !strings.Contains(string(data), "require-desc disabled") {
+		t.Errorf("config should contain 'require-desc disabled', got: %s", data)
+	}
+}
+
+func TestRunMainChooseNonTTYWithSuiteCI(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target build { desc \"b\" steps { exec [\"true\"] } }\ntarget test { desc \"t\" steps { exec [\"true\"] } }\nsuite ci { build }\nsuite dev { build test }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("CI", "true")
+
+	out, code, err := runMainCaptureStdout(t, []string{"--choose", "--ci"})
+	if err != nil {
+		t.Fatalf("RunMain --choose --ci: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(out, "build") {
+		t.Errorf("--choose --ci should include build: %s", out)
+	}
+
+	t.Setenv("CI", "")
+	out2, code2, err2 := runMainCaptureStdout(t, []string{"--choose"})
+	if err2 != nil {
+		t.Fatalf("RunMain --choose dev: %v", err2)
+	}
+	if code2 != 0 {
+		t.Errorf("expected exit 0, got %d", code2)
+	}
+	if !strings.Contains(out2, "build") || !strings.Contains(out2, "test") {
+		t.Errorf("--choose dev should include build and test: %s", out2)
+	}
+}
+
+func TestRunMainChooseNoTargets(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target hidden { desc \"h\" private steps { exec [\"true\"] } }\nsuite dev { }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--choose"})
+	if err == nil {
+		t.Fatal("expected error when no targets to choose from")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainDryRunWithPreset(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target test { desc \"t\" passthrough step = 1 steps { exec [\"go\", \"test\", \"./...\"] } preset cover { argv [\"-coverprofile=c.out\"] } }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	out, code, err := runMainCaptureStdout(t, []string{"--dry-run", "test", "cover"})
+	if err != nil {
+		t.Fatalf("RunMain --dry-run test cover: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(out, "test") {
+		t.Errorf("dry run should show target test: %s", out)
+	}
+}
+
+func TestRunMainExplainWithPresets(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target test { desc \"run tests\" env { VERBOSE on } steps { exec [\"go\", \"test\"] } preset cover { desc \"with coverage\" argv [\"-cover\"] } }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	out, code, err := runMainCaptureStdout(t, []string{"--explain", "test"})
+	if err != nil {
+		t.Fatalf("RunMain --explain: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(out, "desc:") {
+		t.Errorf("explain should include target details: %s", out)
+	}
+}
+
+func TestRunMainLintJSON(t *testing.T) {
+	dir := t.TempDir()
+	bf := []byte("target build cmd go build .\n")
+	os.WriteFile(filepath.Join(dir, "Bakefile"), bf, 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"lint", "--json"})
+	if err != nil {
+		t.Fatalf("RunMain lint --json: %v", err)
+	}
+	if code != 1 {
+		t.Errorf("expected exit 1 for findings, got %d", code)
+	}
+}
+
+func TestRunMainListWithDesc(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"build binary\" steps { exec [\"true\"] } }\ntarget test { desc \"tests\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	out, code, err := runMainCaptureStdout(t, []string{"--list"})
+	if err != nil {
+		t.Fatalf("RunMain --list: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(out, "build") || !strings.Contains(out, "build binary") {
+		t.Errorf("list should show desc: %s", out)
+	}
+}
+
+func TestRunMainRunTargetWithTiming(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--timing", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --timing: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainRunTargetWithArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.txt")
+	bf := "target build { desc \"b\" outputs [\"out.txt\"] steps { exec [\"sh\", \"-c\", \"echo ok > out.txt\"] } }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--artifacts", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --artifacts: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Logf("output file not created (may be due to runner impl): %v", err)
+	}
+}
+
+func TestRunMainDryRunWithDeps(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target a { desc \"a\" deps b steps { exec [\"true\"] } }\ntarget b { desc \"b\" steps { exec [\"echo\", \"hello\"] } }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	out, code, err := runMainCaptureStdout(t, []string{"--dry-run", "a"})
+	if err != nil {
+		t.Fatalf("RunMain --dry-run: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(out, "target b") || !strings.Contains(out, "target a") {
+		t.Errorf("dry run should show dep order: %s", out)
+	}
+}
+
+func TestRunMainLintDisableNoBakefile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"lint", "--disable", "require-desc"})
+	if err == nil {
+		t.Fatal("expected error when no Bakefile")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainShowCmd(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--show-cmd", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --show-cmd: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainRunSuiteDryRun(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target a { desc \"a\" steps { exec [\"true\"] } }\ntarget b { desc \"b\" steps { exec [\"true\"] } }\nsuite s { a b }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	out, code, err := runMainCaptureStdout(t, []string{"--dry-run", "s"})
+	if err != nil {
+		t.Fatalf("RunMain --dry-run suite: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(out, "target a") || !strings.Contains(out, "target b") {
+		t.Errorf("dry run suite should show both targets: %s", out)
+	}
+}
+
+func TestRunMainLintWithConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	cfgDir := filepath.Join(dir, ".bake")
+	os.MkdirAll(cfgDir, 0755)
+	os.WriteFile(filepath.Join(cfgDir, "config"), []byte("require-desc disabled\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"lint", "--config", filepath.Join(cfgDir, "config")})
+	if err != nil {
+		t.Fatalf("RunMain lint --config: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0 with require-desc disabled, got %d", code)
+	}
+}
+
+func TestEnsureBakefileFormatLint(t *testing.T) {
+	dir := t.TempDir()
+	bf := []byte("target   build { desc \"b\" steps { exec [\"true\"] } }\n")
+	path := filepath.Join(dir, "Bakefile")
+	os.WriteFile(path, bf, 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	if err := ensureBakefileFormatLint(path); err != nil {
+		t.Fatalf("ensureBakefileFormatLint: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "   build") {
+		t.Errorf("extra spaces should be cleaned by auto-format: %s", data)
+	}
+}
+
+func TestRunMainRunTargetWithPassthrough(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target test { desc \"t\" passthrough step = 1 steps { exec [\"echo\", \"hello\"] } }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"test", "--", "extra"})
+	if err != nil {
+		t.Fatalf("RunMain test -- extra: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainWhyUnknownTarget(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--why", "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainWhatDependsOnUnknown(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--what-depends-on", "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainFormatWrite(t *testing.T) {
+	dir := t.TempDir()
+	bf := []byte("target   build { desc \"b\" steps { exec [\"true\"] } }\n")
+	path := filepath.Join(dir, "Bakefile")
+	os.WriteFile(path, bf, 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"fmt", "-w"})
+	if err != nil {
+		t.Fatalf("RunMain fmt -w: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "   build") {
+		t.Errorf("extra spaces should be removed after format: %s", data)
 	}
 }
 

@@ -1,6 +1,8 @@
 package dsl
 
 import (
+	"strings"
+
 	"github.com/alecthomas/participle/v2/lexer"
 )
 
@@ -14,18 +16,18 @@ type Bakefile struct {
 
 // FileEntry is an import, Suite, Target, Profile, or file-level private marker.
 type FileEntry struct {
-	Import  *ImportLine   `  @@`
-	Suite   *SuiteBlock   `| @@`
-	Target  *TargetBlock  `| @@`
-	Profile *ProfileBlock `| @@`
+	Import  *ImportLine    `  @@`
+	Suite   *SuiteBlock    `| @@`
+	Target  *TargetBlock   `| @@`
+	Profile *ProfileBlock  `| @@`
 	Private *PrivateMarker `| @@`
 }
 
 // ProfileBlock is "profile" ident "{" dotenv? env? "}".
 type ProfileBlock struct {
 	Pos  lexer.Position
-	Name string        `"profile" @Ident`
-	Body *ProfileBody  `"{" @@ "}"`
+	Name string       `"profile" @Ident`
+	Body *ProfileBody `"{" @@ "}"`
 }
 
 // ProfileBody contains dotenv and env entries.
@@ -59,11 +61,73 @@ type DotenvLine struct {
 	Files []string `"dotenv" @Ident*`
 }
 
-// SuiteBlock is "suite" ident "{" ident+ "}".
+// SuiteEntryToken captures a quoted string; unquotes on capture.
+type SuiteEntryToken string
+
+// Capture implements participle.Capture; unquotes if the value is a quoted string.
+func (s *SuiteEntryToken) Capture(values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	v := values[0]
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		inner := v[1 : len(v)-1]
+		var b []byte
+		for i := 0; i < len(inner); i++ {
+			if inner[i] == '\\' && i+1 < len(inner) && inner[i+1] == '"' {
+				b = append(b, '"')
+				i++
+				continue
+			}
+			b = append(b, inner[i])
+		}
+		*s = SuiteEntryToken(string(b))
+	} else {
+		*s = SuiteEntryToken(v)
+	}
+	return nil
+}
+
+// SuiteEntryIdent is a single ident (e.g. build or test.cover); one token.
+type SuiteEntryIdent struct {
+	V string `@Ident`
+}
+
+// SuiteEntryQuoted is a quoted string; one token.
+type SuiteEntryQuoted struct {
+	V SuiteEntryToken `@String`
+}
+
+// SuiteEntry is either one ident or one quoted string so the parser consumes exactly one token per entry.
+type SuiteEntry struct {
+	Ident  *SuiteEntryIdent  `( @@ |`
+	Quoted *SuiteEntryQuoted `  @@ )`
+}
+
+// Raw returns the entry as "target" or "target preset" (space-separated for config).
+func (e *SuiteEntry) Raw() string {
+	if e == nil {
+		return ""
+	}
+	if e.Quoted != nil {
+		return string(e.Quoted.V)
+	}
+	if e.Ident != nil {
+		v := e.Ident.V
+		// One dot => target.preset → "target preset"
+		if strings.Count(v, ".") == 1 {
+			return strings.Replace(v, ".", " ", 1)
+		}
+		return v
+	}
+	return ""
+}
+
+// SuiteBlock is "suite" ident "{" entry* "}". Each entry is ident (e.g. test.cover) or "quoted string".
 type SuiteBlock struct {
 	Pos     lexer.Position
-	Name    string   `"suite" @Ident`
-	Targets []string `"{" @Ident* "}"`
+	Name    string        `"suite" @Ident`
+	Entries []*SuiteEntry `"{" ( @@ )* "}"`
 }
 
 // TargetBlock is "target" ident "{" ... "}" (bracketed) or "target" ident "cmd" ... (single-line).
@@ -79,7 +143,7 @@ type TargetBody struct {
 	Entries []*BodyEntry `@@*`
 }
 
-// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private.
+// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private, preset.
 type BodyEntry struct {
 	Deps        *DepsClause        `  @@`
 	Steps       *StepsBlock        `| @@`
@@ -95,6 +159,44 @@ type BodyEntry struct {
 	WhenEnv     *WhenEnvClause     `| @@`
 	WhenCmd     *WhenCmdClause     `| @@`
 	Private     *PrivateClause     `| @@`
+	Preset      *PresetBlock       `| @@`
+	Pool        *PoolClause        `| @@`
+	Mutex       *MutexClause       `| @@`
+}
+
+// PoolClause is "pool" ident — target uses this named pool (semaphore).
+type PoolClause struct {
+	Name string `"pool" @Ident`
+}
+
+// MutexClause is "mutex" ident — target holds this mutex while running.
+type MutexClause struct {
+	Name string `"mutex" @Ident`
+}
+
+// PresetArgvClause is "argv" "[" (ident|string)* "]".
+type PresetArgvClause struct {
+	Argv []ExecElem `"argv" "[" ( ( @Ident | @String ) ( "," ( @Ident | @String ) )* )? "]"`
+}
+
+// PresetBodyEntry is argv, env, desc, or steps inside a preset block.
+type PresetBodyEntry struct {
+	Argv  *PresetArgvClause `  @@`
+	Env   *EnvBlock         `| @@`
+	Desc  *DescClause       `| @@`
+	Steps *StepsBlock       `| @@`
+}
+
+// PresetBody is the content inside preset { }; at least one entry (argv, env, desc, or steps).
+type PresetBody struct {
+	Entries []*PresetBodyEntry `@@+`
+}
+
+// PresetBlock is "preset" ident "{" body "}".
+type PresetBlock struct {
+	Pos  lexer.Position
+	Name string      `"preset" @Ident`
+	Body *PresetBody `"{" @@ "}"`
 }
 
 // PrivateClause is "private" inside a target; target is hidden from --list.
@@ -150,8 +252,14 @@ type ExecStep struct {
 	Argv []ExecElem `"[" ( ( @Ident | @String ) ( "," ( @Ident | @String ) )* )? "]"`
 }
 
-// ExecElem captures one argv element (ident or quoted string).
-type ExecElem string
+// ExecElem captures one argv element (ident or quoted string) and tracks whether it was quoted.
+type ExecElem struct {
+	Value  string
+	Quoted bool
+}
+
+// String returns the element value.
+func (e ExecElem) String() string { return e.Value }
 
 // Capture implements participle.Capture.
 func (e *ExecElem) Capture(values []string) error {
@@ -170,11 +278,16 @@ func (e *ExecElem) Capture(values []string) error {
 			}
 			b = append(b, inner[i])
 		}
-		*e = ExecElem(string(b))
+		*e = ExecElem{Value: string(b), Quoted: true}
 	} else {
-		*e = ExecElem(s)
+		*e = ExecElem{Value: s, Quoted: false}
 	}
 	return nil
+}
+
+// NewExecElem creates a quoted ExecElem from a string value.
+func NewExecElem(v string) ExecElem {
+	return ExecElem{Value: v, Quoted: true}
 }
 
 // QuotedString captures a double-quoted string and unquotes on capture.
@@ -268,7 +381,8 @@ type TagsClause struct {
 	Tags []string `"tags" @Ident*`
 }
 
-// PassthroughClause is "passthrough" "step" "=" N.
+// PassthroughClause is "passthrough" "step" "=" N (optional "name" string).
 type PassthroughClause struct {
-	Step int `"passthrough" "step" "=" @Int`
+	Step int           `"passthrough" "step" "=" @Int`
+	Name *QuotedString `( "name" @String )?`
 }

@@ -1,9 +1,12 @@
 suite local {
-  build test
+  build
+  test
 }
 
 suite ci {
-  build lint test
+  build
+  lint
+  test
 }
 
 target build {

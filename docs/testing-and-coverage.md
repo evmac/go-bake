@@ -23,7 +23,7 @@ bake test     # build + test only
 go test ./...
 ```
 
-Useful variants:
+Useful variations:
 
 - `go test ./internal/runner/... -v -run TestRunWithCache` — one package, verbose, filter by test name
 - `go test ./... -count=1` — disable cache (fresh run)
@@ -64,6 +64,10 @@ go tool cover -html=coverage.out
 - Use `-html` when adding a feature or fixing a bug to see which branches you missed.
 - Coverage is produced in CI (see below); check the workflow run or artifact if you want numbers after a push.
 
+**Known gaps (intentional):**
+
+- **`internal/runner/signal.go` — `killProcessGroup`** is at 0% coverage. It runs only when a step is killed (e.g. context cancel or timeout). Covering it would require a test that starts a long-running process and then cancels the context, which is flaky and platform-sensitive (Unix-only). We don’t add that test by default; the path is straightforward and can be exercised manually if needed.
+
 ## Writing tests
 
 - **Package tests** live in `*_test.go` next to the code. Use `t.TempDir()` for scratch dirs; avoid leaving files in the repo.
@@ -75,7 +79,7 @@ When something breaks, add a test that reproduces the bug (or the missing behavi
 
 ## CI
 
-The **CI** workflow runs the **bake ci** suite: it checks out the repo, runs `go run ./cmd/bake ci`, which runs `build` then **test-cover** (tests with `-coverprofile=coverage.out`). So CI is “bake’s own ci suite”; no separate script.
+The **CI** workflow runs the **bake ci** suite: it checks out the repo, runs `go run ./cmd/bake ci`, which runs **format.check** then **test.cover** (tests with `-coverprofile=coverage.out`). So CI is “bake’s own ci suite”; no separate script.
 
 The workflow uploads `coverage.out` as an artifact; download it and run `go tool cover -html=coverage.out` locally if you want to inspect.
 

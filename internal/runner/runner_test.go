@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/evmac/go-bake/internal/cache"
 	"github.com/evmac/go-bake/internal/config"
@@ -42,6 +44,258 @@ func TestRunEcho(t *testing.T) {
 	err := Run(context.Background(), cfg, "echo", RunOptions{RootDir: cfg.RootDir})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRunWithEventWriter exercises emitEvent (JSON event stream).
+func TestRunWithEventWriter(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &config.File{
+		RootDir: t.TempDir(),
+		Targets: []*config.Target{
+			{Name: "ev", Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	err := Run(context.Background(), cfg, "ev", RunOptions{RootDir: cfg.RootDir, EventWriter: &buf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"event":"run_start"`) || !strings.Contains(out, `"event":"run_end"`) {
+		t.Errorf("expected run_start and run_end events, got %s", out)
+	}
+}
+
+// TestRunUnknownTargetWithEventWriter exercises emitEvent on error path (errMsg).
+func TestRunUnknownTargetWithEventWriter(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &config.File{RootDir: t.TempDir(), Targets: []*config.Target{{Name: "a", Steps: []config.Step{{Argv: []string{"true"}}}}}}
+	err := Run(context.Background(), cfg, "nonexistent", RunOptions{RootDir: cfg.RootDir, EventWriter: &buf})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"event":"run_end"`) || !strings.Contains(out, "unknown target") {
+		t.Errorf("expected run_end with message, got %s", out)
+	}
+}
+
+// TestRunWithPool exercises getPoolSem (target with pool).
+func TestRunWithPool(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "p", Pool: "my-pool", Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	var poolSems sync.Map
+	err := Run(context.Background(), cfg, "p", RunOptions{RootDir: dir, PoolSems: &poolSems})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRunWithMutex exercises getMutex (target with mutex).
+func TestRunWithMutex(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "m", Mutex: "my-mutex", Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	var mutexes sync.Map
+	err := Run(context.Background(), cfg, "m", RunOptions{RootDir: dir, Mutexes: &mutexes})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRunMaxParallel exercises LevelOrder and parallel execution (emitEvent on parallel path).
+func TestRunMaxParallel(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "a", Deps: []string{"b", "c"}, Steps: []config.Step{{Argv: []string{"echo", "a"}}}},
+			{Name: "b", Steps: []config.Step{{Argv: []string{"echo", "b"}}}},
+			{Name: "c", Steps: []config.Step{{Argv: []string{"echo", "c"}}}},
+		},
+	}
+	var buf bytes.Buffer
+	err := Run(context.Background(), cfg, "a", RunOptions{RootDir: dir, MaxParallel: 2, EventWriter: &buf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"event":"run_end"`) {
+		t.Error("expected run_end event")
+	}
+}
+
+// TestRunSequentialDepFailure covers Run when a dependency fails (emitEvent run_end, errMsg).
+func TestRunSequentialDepFailure(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "bad", Steps: []config.Step{{Argv: []string{"sh", "-c", "exit 1"}}}},
+			{Name: "top", Deps: []string{"bad"}, Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	var buf bytes.Buffer
+	err := Run(context.Background(), cfg, "top", RunOptions{RootDir: dir, EventWriter: &buf})
+	if err == nil {
+		t.Fatal("expected error when dep fails")
+	}
+	if !strings.Contains(err.Error(), "bad") {
+		t.Errorf("error should mention dep name: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"event":"run_end"`) || !strings.Contains(buf.String(), "exit status") {
+		t.Errorf("expected run_end with error message: %s", buf.String())
+	}
+}
+
+// TestRunParallelOneFails covers parallel path when one target in a level fails (firstErr, run_end false).
+func TestRunParallelOneFails(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "a", Deps: []string{"b", "c"}, Steps: []config.Step{{Argv: []string{"echo", "a"}}}},
+			{Name: "b", Steps: []config.Step{{Argv: []string{"sh", "-c", "exit 1"}}}},
+			{Name: "c", Steps: []config.Step{{Argv: []string{"echo", "c"}}}},
+		},
+	}
+	var buf bytes.Buffer
+	err := Run(context.Background(), cfg, "a", RunOptions{RootDir: dir, MaxParallel: 2, EventWriter: &buf})
+	if err == nil {
+		t.Fatal("expected error when one dep fails")
+	}
+	if !strings.Contains(buf.String(), `"event":"run_end"`) {
+		t.Errorf("expected run_end event: %s", buf.String())
+	}
+}
+
+// TestRunTopoOrderError covers Run when TopoOrder fails (unknown dep in DAG).
+func TestRunTopoOrderError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "a", Deps: []string{"nonexistent"}, Steps: []config.Step{{Argv: []string{"echo", "a"}}}},
+		},
+	}
+	var buf bytes.Buffer
+	err := Run(context.Background(), cfg, "a", RunOptions{RootDir: dir, EventWriter: &buf})
+	if err == nil {
+		t.Fatal("expected error for unknown dep")
+	}
+	if !strings.Contains(buf.String(), `"event":"run_end"`) {
+		t.Errorf("expected run_end: %s", buf.String())
+	}
+}
+
+// TestRunWithTimingReporter covers TimingReporter callback.
+func TestRunWithTimingReporter(t *testing.T) {
+	dir := t.TempDir()
+	var reported []struct {
+		name string
+		d    time.Duration
+	}
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "t", Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	opts := RunOptions{
+		RootDir: dir,
+		TimingReporter: func(name string, d time.Duration) {
+			reported = append(reported, struct {
+				name string
+				d    time.Duration
+			}{name, d})
+		},
+	}
+	err := Run(context.Background(), cfg, "t", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || reported[0].name != "t" || reported[0].d < 0 {
+		t.Errorf("TimingReporter: got %v", reported)
+	}
+}
+
+// TestRunWithArtifactReporter covers ArtifactReporter callback after successful run with outputs.
+func TestRunWithArtifactReporter(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "in"), []byte("x"), 0644)
+	var reported []struct {
+		name  string
+		paths []string
+	}
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name:    "build",
+				Inputs:  []string{"in"},
+				Outputs: []string{"out"},
+				Steps:   []config.Step{{Argv: []string{"sh", "-c", "cp in out"}}},
+			},
+		},
+	}
+	opts := RunOptions{
+		RootDir: dir,
+		ArtifactReporter: func(name string, paths []string) {
+			reported = append(reported, struct {
+				name  string
+				paths []string
+			}{name, paths})
+		},
+	}
+	err := Run(context.Background(), cfg, "build", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || reported[0].name != "build" || len(reported[0].paths) == 0 {
+		t.Errorf("ArtifactReporter: got %v", reported)
+	}
+	if !strings.Contains(reported[0].paths[0], "out") {
+		t.Errorf("expected output path in report: %v", reported[0].paths)
+	}
+}
+
+// TestRunCacheSkipWithEventWriter covers cache_skip event when second run is up to date.
+func TestRunCacheSkipWithEventWriter(t *testing.T) {
+	dir := t.TempDir()
+	inPath := filepath.Join(dir, "in")
+	os.WriteFile(inPath, []byte("x"), 0644)
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name:    "cached",
+				Inputs:  []string{"in"},
+				Outputs: []string{"out"},
+				Steps:   []config.Step{{Argv: []string{"sh", "-c", "cp in out"}}},
+			},
+		},
+	}
+	opts := RunOptions{RootDir: dir}
+	err := Run(context.Background(), cfg, "cached", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	opts.EventWriter = &buf
+	err = Run(context.Background(), cfg, "cached", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"event":"cache_skip"`) {
+		t.Errorf("expected cache_skip event on second run: %s", buf.String())
 	}
 }
 
@@ -119,6 +373,59 @@ func TestRunWithDeps(t *testing.T) {
 	}
 }
 
+func TestRunWithPreset(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "preset_out.txt")
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name: "test",
+				Steps: []config.Step{
+					{Argv: []string{"sh", "-c", "echo \"$0\" > " + outFile}},
+				},
+				PassthroughStep: 1,
+				Presets: []config.Preset{
+					{Name: "cover", Argv: []string{"-coverprofile=coverage.out"}},
+					{Name: "extra", Env: map[string]string{"BAKE_VAR": "1"}},
+				},
+			},
+		},
+	}
+	// Run with preset "cover": argv should be appended to step 1
+	err := Run(context.Background(), cfg, "test", RunOptions{
+		RootDir: dir,
+		Preset:  &cfg.Targets[0].Presets[0],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "-coverprofile=coverage.out" {
+		t.Errorf("preset argv: got %q", got)
+	}
+	// Run with preset "extra" (env only): step should see BAKE_VAR=1
+	envOut := filepath.Join(dir, "env_out.txt")
+	cfg.Targets[0].Steps[0] = config.Step{Argv: []string{"sh", "-c", "echo \"$BAKE_VAR\" > " + envOut}}
+	err = Run(context.Background(), cfg, "test", RunOptions{
+		RootDir: dir,
+		Preset:  &cfg.Targets[0].Presets[1],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(envOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "1" {
+		t.Errorf("preset env: got %q", got)
+	}
+}
+
 func TestRunPassthrough(t *testing.T) {
 	cfg := &config.File{
 		RootDir: t.TempDir(),
@@ -134,8 +441,8 @@ func TestRunPassthrough(t *testing.T) {
 	}
 	// Passthrough args go to step 1 (first step)
 	err := Run(context.Background(), cfg, "pt", RunOptions{
-		RootDir:     cfg.RootDir,
-		Passthrough: []string{"hi"},
+		RootDir:           cfg.RootDir,
+		PassthroughByStep: map[int][]string{1: {"hi"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +649,206 @@ func TestRunWithCacheHitAndMiss(t *testing.T) {
 	}
 	if countMarkerLines() != 2 {
 		t.Errorf("cache miss: expected 2 marker lines, got %d", countMarkerLines())
+	}
+}
+
+func TestRunWithPresetSteps(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "preset_steps_out.txt")
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name:  "test",
+				Steps: []config.Step{{Argv: []string{"echo", "original"}}},
+				Presets: []config.Preset{
+					{
+						Name: "bench",
+						Steps: []config.Step{
+							{Argv: []string{"sh", "-c", "echo bench > " + outFile}},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := Run(context.Background(), cfg, "test", RunOptions{
+		RootDir: dir,
+		Preset:  &cfg.Targets[0].Presets[0],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("preset steps should have run: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "bench" {
+		t.Errorf("preset steps: got %q, want %q", got, "bench")
+	}
+}
+
+func TestRunWithPresetEnvOverlay(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "preset_env_out.txt")
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name: "test",
+				Env:  map[string]string{"MODE": "normal"},
+				Steps: []config.Step{
+					{Argv: []string{"sh", "-c", "echo $MODE > " + outFile}},
+				},
+				Presets: []config.Preset{
+					{Name: "cover", Env: map[string]string{"MODE": "coverage"}},
+				},
+			},
+		},
+	}
+	err := Run(context.Background(), cfg, "test", RunOptions{
+		RootDir: dir,
+		Preset:  &cfg.Targets[0].Presets[0],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "coverage" {
+		t.Errorf("preset env overlay: got %q, want %q", got, "coverage")
+	}
+}
+
+func TestRunWithPresetEnvNoTargetEnv(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "preset_env2.txt")
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name: "test",
+				Steps: []config.Step{
+					{Argv: []string{"sh", "-c", "echo $PVAR > " + outFile}},
+				},
+				Presets: []config.Preset{
+					{Name: "p", Env: map[string]string{"PVAR": "frompreset"}},
+				},
+			},
+		},
+	}
+	err := Run(context.Background(), cfg, "test", RunOptions{
+		RootDir: dir,
+		Preset:  &cfg.Targets[0].Presets[0],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "frompreset" {
+		t.Errorf("preset env (no target env): got %q, want %q", got, "frompreset")
+	}
+}
+
+func TestRunWithShowCmdShellRunner(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "sh", Steps: []config.Step{{Runner: "sh", Argv: []string{"echo", "hello"}}}},
+		},
+	}
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	err = Run(context.Background(), cfg, "sh", RunOptions{RootDir: dir, ShowCmd: true})
+	os.Stderr = oldStderr
+	w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	for {
+		var b [256]byte
+		n, _ := r.Read(b[:])
+		if n == 0 {
+			break
+		}
+		buf.Write(b[:n])
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("+ sh -c")) {
+		t.Errorf("ShowCmd with shell runner should print '+ sh -c ...'; got %q", buf.String())
+	}
+}
+
+func TestRunWithPresetStepsAndCache(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "in"), []byte("x"), 0644)
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{
+				Name:    "t",
+				Inputs:  []string{"in"},
+				Outputs: []string{"out"},
+				Steps:   []config.Step{{Argv: []string{"sh", "-c", "cp in out"}}},
+				Presets: []config.Preset{
+					{
+						Name:  "alt",
+						Steps: []config.Step{{Argv: []string{"sh", "-c", "cp in out && echo alt >> out"}}},
+					},
+				},
+			},
+		},
+	}
+	err := Run(context.Background(), cfg, "t", RunOptions{
+		RootDir: dir,
+		Preset:  &cfg.Targets[0].Presets[0],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "out"))
+	if !strings.Contains(string(data), "alt") {
+		t.Errorf("preset steps should have been used: %s", data)
+	}
+}
+
+func TestWhyReasonsInputHashMismatchNoChanges(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "in"), []byte("x"), 0644)
+	tgt := &config.Target{
+		Name:    "t",
+		Inputs:  []string{"in"},
+		Outputs: []string{"out"},
+		Steps:   []config.Step{{Argv: []string{"sh", "-c", "cp in out"}}},
+	}
+	cfg := &config.File{RootDir: dir, Targets: []*config.Target{tgt}}
+	opts := RunOptions{RootDir: dir}
+	Run(context.Background(), cfg, "t", opts)
+
+	tgt.Steps = []config.Step{{Argv: []string{"sh", "-c", "cp in out && echo v2"}}}
+	reasons, err := WhyReasons(dir, tgt, opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasRun := false
+	for _, r := range reasons {
+		if strings.Contains(r, "would run") || strings.Contains(r, "no cache entry") {
+			hasRun = true
+			break
+		}
+	}
+	if !hasRun {
+		t.Errorf("expected would run due to changed steps, got %v", reasons)
 	}
 }
 

@@ -61,6 +61,41 @@ func Validate(cfg *File) []ValidationError {
 		}
 	}
 
+	// Duplicate preset names within a target
+	for _, t := range cfg.Targets {
+		seenVar := make(map[string]bool)
+		for _, v := range t.Presets {
+			if seenVar[v.Name] {
+				errs = append(errs, ValidationError{
+					Filename: filename,
+					Line:     t.Line,
+					Column:   t.Column,
+					Message:  fmt.Sprintf("target %q: duplicate preset %q", t.Name, v.Name),
+				})
+			}
+			seenVar[v.Name] = true
+		}
+	}
+
+	// Duplicate passthrough step indices within a target
+	for _, t := range cfg.Targets {
+		if len(t.Passthrough) < 2 {
+			continue
+		}
+		seenStep := make(map[int]bool)
+		for _, slot := range t.Passthrough {
+			if seenStep[slot.Step] {
+				errs = append(errs, ValidationError{
+					Filename: filename,
+					Line:     t.Line,
+					Column:   t.Column,
+					Message:  fmt.Sprintf("target %q: duplicate passthrough step %d", t.Name, slot.Step),
+				})
+			}
+			seenStep[slot.Step] = true
+		}
+	}
+
 	// Duplicate profile names
 	seenProfile := make(map[string]int)
 	for _, p := range cfg.Profiles {
@@ -91,15 +126,26 @@ func Validate(cfg *File) []ValidationError {
 		}
 	}
 
-	// Suite references to missing targets
+	// Suite references to missing targets or unknown presets
 	for _, s := range cfg.Suites {
-		for _, name := range s.Targets {
-			if cfg.TargetByName(name) == nil {
+		for _, entry := range s.Targets {
+			targetName, presetName := ParseSuiteEntry(entry)
+			tgt := cfg.TargetByName(targetName)
+			if tgt == nil {
 				errs = append(errs, ValidationError{
 					Filename: filename,
 					Line:     s.Line,
 					Column:   s.Column,
-					Message:  fmt.Sprintf("suite %q references unknown target %q", s.Name, name),
+					Message:  fmt.Sprintf("suite %q references unknown target %q", s.Name, targetName),
+				})
+				continue
+			}
+			if presetName != "" && tgt.PresetByName(presetName) == nil {
+				errs = append(errs, ValidationError{
+					Filename: filename,
+					Line:     s.Line,
+					Column:   s.Column,
+					Message:  fmt.Sprintf("suite %q: target %q has no preset %q", s.Name, targetName, presetName),
 				})
 			}
 		}

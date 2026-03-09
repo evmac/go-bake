@@ -1,41 +1,62 @@
+suite ci {
+  format.check
+  test.cover
+}
+
+suite precommit {
+  build
+  format
+  test
+}
+
+target act {
+  desc "run GitHub Actions workflow locally with act (requires Docker + act)"
+  steps { exec ["act", "workflow_dispatch"] }
+  preset trunk {
+    desc "run push-to-trunk workflow locally with act"
+    steps { exec ["act", "push"] }
+  }
+  preset pr {
+    desc "run pr-submission workflow locally with act"
+    steps { exec ["act", "pull_request"] }
+  }
+}
+
 target build {
   desc "build the bake binary"
-  inputs [ "./cmd/bake/*.go", "go.mod", "go.sum" ]
-  outputs [ "bin/bake" ]
-  exec ["go", "build", "-o", "bin/bake", "./cmd/bake"]
+  inputs ["./cmd/bake/*.go", "./internal/*/*.go", "go.mod", "go.sum"]
+  outputs ["bin/bake"]
+  steps { exec ["go", "build", "-o", "bin/bake", "./cmd/bake"] }
+}
+
+target format {
+  desc "format Go code (go fmt ./...)"
+  steps { exec ["go", "fmt", "./..."] }
+  preset check {
+    desc "check code formatting (no auto-fix)"
+    steps { exec ["gofmt", "-l", "."] }
+  }
+}
+
+target list {
+  desc "list targets (alias for --list)"
+  steps { exec ["go", "run", "./cmd/bake", "--list"] }
 }
 
 target test {
   desc "run tests"
   deps build
-  exec ["go", "test", "./..."]
-}
-
-target test-cover {
-  desc "run tests with coverage (produces coverage.out)"
-  deps build
-  exec ["go", "test", "./...", "-coverprofile=coverage.out"]
-}
-
-target format {
-  desc "format Go code (go fmt ./...)"
-  exec ["go", "fmt", "./..."]
-}
-
-target list {
-  desc "list targets (alias for --list)"
-  exec ["go", "run", "./cmd/bake", "--list"]
-}
-
-suite local {
-  build format test
-}
-
-suite ci {
-  build test-cover
-}
-
-target act {
-  desc "run CI workflow locally with act (requires Docker + act: brew install act)"
-  exec ["act", "push"]
+  steps { exec ["go", "test", "./..."] }
+  preset cover {
+    desc "run tests with coverage (produces coverage.out)"
+    steps { exec ["go", "test", "./...", "--count=1", "-coverprofile=coverage.out"] }
+  }
+  preset no-cache {
+    desc "run tests without cache"
+    steps { exec ["go", "test", "./...", "-count=1"] }
+  }
+  preset race {
+    desc "run tests with race condition detector"
+    steps { exec ["go", "test", "./...", "-race"] }
+  }
 }

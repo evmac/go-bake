@@ -71,7 +71,14 @@ func Compile(ast *Bakefile) (*config.File, error) {
 			continue
 		}
 		if e.Suite != nil {
-			su := &config.Suite{Name: e.Suite.Name, Targets: e.Suite.Targets}
+			var targets []string
+			for _, ent := range e.Suite.Entries {
+				if ent == nil {
+					continue
+				}
+				targets = append(targets, ent.Raw())
+			}
+			su := &config.Suite{Name: e.Suite.Name, Targets: targets}
 			if e.Suite.Pos.Line > 0 {
 				su.Line, su.Column = e.Suite.Pos.Line, e.Suite.Pos.Column
 			}
@@ -90,7 +97,7 @@ func compileProfile(p *ProfileBlock) (*config.Profile, error) {
 			}
 			if e.Dotenv != nil {
 				for _, path := range e.Dotenv.Paths {
-					out.Dotenv = append(out.Dotenv, string(path))
+					out.Dotenv = append(out.Dotenv, path.Value)
 				}
 			}
 			if e.Env != nil {
@@ -158,16 +165,23 @@ func compileTarget(t *TargetBlock, filePrivate bool) (*config.Target, error) {
 				tgt.Tags = e.Tags.Tags
 			}
 			if e.Passthrough != nil {
-				tgt.PassthroughStep = e.Passthrough.Step
+				slot := config.PassthroughSlot{Step: e.Passthrough.Step}
+				if e.Passthrough.Name != nil {
+					slot.Name = e.Passthrough.Name.Value
+				}
+				tgt.Passthrough = append(tgt.Passthrough, slot)
+				if tgt.PassthroughStep == 0 {
+					tgt.PassthroughStep = e.Passthrough.Step
+				}
 			}
 			if e.Inputs != nil {
 				for _, p := range e.Inputs.Paths {
-					tgt.Inputs = append(tgt.Inputs, string(p))
+					tgt.Inputs = append(tgt.Inputs, p.Value)
 				}
 			}
 			if e.Outputs != nil {
 				for _, p := range e.Outputs.Paths {
-					tgt.Outputs = append(tgt.Outputs, string(p))
+					tgt.Outputs = append(tgt.Outputs, p.Value)
 				}
 			}
 			if e.WhenEnv != nil {
@@ -175,8 +189,47 @@ func compileTarget(t *TargetBlock, filePrivate bool) (*config.Target, error) {
 			}
 			if e.WhenCmd != nil {
 				for _, elem := range e.WhenCmd.Argv {
-					tgt.WhenCmd = append(tgt.WhenCmd, string(elem))
+					tgt.WhenCmd = append(tgt.WhenCmd, elem.Value)
 				}
+			}
+			if e.Preset != nil {
+				v := config.Preset{Name: e.Preset.Name, Env: make(map[string]string)}
+				if e.Preset.Body != nil {
+					for _, ve := range e.Preset.Body.Entries {
+						if ve == nil {
+							continue
+						}
+						if ve.Argv != nil {
+							for _, elem := range ve.Argv.Argv {
+								v.Argv = append(v.Argv, elem.Value)
+							}
+						}
+						if ve.Env != nil {
+							for _, p := range ve.Env.Pairs {
+								v.Env[p.Key] = string(p.Value)
+							}
+						}
+						if ve.Desc != nil {
+							v.Desc = ve.Desc.Text.Value
+						}
+						if ve.Steps != nil && len(ve.Steps.Steps) > 0 {
+							for _, s := range ve.Steps.Steps {
+								step, err := compileStep(s)
+								if err != nil {
+									return nil, err
+								}
+								v.Steps = append(v.Steps, step)
+							}
+						}
+					}
+				}
+				tgt.Presets = append(tgt.Presets, v)
+			}
+			if e.Pool != nil {
+				tgt.Pool = e.Pool.Name
+			}
+			if e.Mutex != nil {
+				tgt.Mutex = e.Mutex.Name
 			}
 		}
 	}
@@ -191,7 +244,7 @@ func compileStep(s *Step) (config.Step, error) {
 	if s.Exec != nil {
 		argv := make([]string, 0, len(s.Exec.Argv))
 		for _, elem := range s.Exec.Argv {
-			argv = append(argv, string(elem))
+			argv = append(argv, elem.Value)
 		}
 		return config.Step{Argv: argv}, nil
 	}

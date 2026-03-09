@@ -1,4 +1,4 @@
-# Run the bake ci suite (build + test-cover). Uses the project's own Bakefile and suite.
+# Run the bake ci suite (format.check + test.cover). Uses the project's own Bakefile and suite.
 name: CI
 
 on:

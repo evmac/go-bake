@@ -3,6 +3,7 @@ package dsl
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -33,30 +34,72 @@ func (f *formatter) writeBakefile(ast *Bakefile) error {
 		}
 		f.write("\n\n")
 	}
-	for i, e := range ast.Entries {
+	// Group file entries by type; output order: imports, private, suites (by name), profiles (by name), targets (by name).
+	var imports []*ImportLine
+	var hasPrivate bool
+	var suites []*SuiteBlock
+	var profiles []*ProfileBlock
+	var targets []*TargetBlock
+	for _, e := range ast.Entries {
 		if e == nil {
 			continue
 		}
 		if e.Import != nil {
-			f.write("import ")
-			f.writeQuoted(e.Import.Path.Value)
-			f.write("\n")
+			imports = append(imports, e.Import)
 		}
 		if e.Private != nil {
-			f.write("private\n")
-		}
-		if e.Profile != nil {
-			f.writeProfile(e.Profile)
-		}
-		if e.Target != nil {
-			f.writeTarget(e.Target)
+			hasPrivate = true
 		}
 		if e.Suite != nil {
-			f.writeSuite(e.Suite)
+			suites = append(suites, e.Suite)
 		}
-		if i < len(ast.Entries)-1 {
+		if e.Profile != nil {
+			profiles = append(profiles, e.Profile)
+		}
+		if e.Target != nil {
+			targets = append(targets, e.Target)
+		}
+	}
+	sort.Slice(suites, func(i, j int) bool { return suites[i].Name < suites[j].Name })
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
+	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
+	needNL := false
+	for _, imp := range imports {
+		if needNL {
 			f.write("\n")
 		}
+		f.write("import ")
+		f.writeQuoted(imp.Path.Value)
+		f.write("\n")
+		needNL = true
+	}
+	if hasPrivate {
+		if needNL {
+			f.write("\n")
+		}
+		f.write("private\n")
+		needNL = true
+	}
+	for _, s := range suites {
+		if needNL {
+			f.write("\n")
+		}
+		f.writeSuite(s)
+		needNL = true
+	}
+	for _, p := range profiles {
+		if needNL {
+			f.write("\n")
+		}
+		f.writeProfile(p)
+		needNL = true
+	}
+	for _, t := range targets {
+		if needNL {
+			f.write("\n")
+		}
+		f.writeTarget(t)
+		needNL = true
 	}
 	return f.err
 }
@@ -75,7 +118,7 @@ func (f *formatter) writeProfile(p *ProfileBlock) {
 				f.write("  dotenv")
 				for _, path := range e.Dotenv.Paths {
 					f.write(" ")
-					f.writeQuoted(string(path))
+					f.writeQuoted(path.Value)
 				}
 				f.write("\n")
 			}
@@ -116,7 +159,7 @@ func (f *formatter) writeTarget(t *TargetBlock) {
 
 // orderBodyEntries returns body entries in canonical order.
 func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
-	var desc, deps, whenEnv, whenCmd, inputs, outputs, args, env, cwd, tags, private, passthrough, steps []*BodyEntry
+	var desc, deps, whenEnv, whenCmd, inputs, outputs, args, env, cwd, tags, private, passthrough, presets, pool, mutex, steps []*BodyEntry
 	for _, e := range entries {
 		if e == nil {
 			continue
@@ -146,6 +189,12 @@ func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
 			private = append(private, e)
 		case e.Passthrough != nil:
 			passthrough = append(passthrough, e)
+		case e.Preset != nil:
+			presets = append(presets, e)
+		case e.Pool != nil:
+			pool = append(pool, e)
+		case e.Mutex != nil:
+			mutex = append(mutex, e)
 		case e.Steps != nil, e.Step != nil:
 			steps = append(steps, e)
 		}
@@ -163,7 +212,10 @@ func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
 	out = append(out, tags...)
 	out = append(out, private...)
 	out = append(out, passthrough...)
+	out = append(out, pool...)
+	out = append(out, mutex...)
 	out = append(out, steps...)
+	out = append(out, presets...)
 	return out
 }
 
@@ -234,7 +286,63 @@ func (f *formatter) writeBodyEntry(e *BodyEntry, indent string) {
 	case e.Private != nil:
 		f.write(indent + "private\n")
 	case e.Passthrough != nil:
-		f.write(fmt.Sprintf("%spassthrough step = %d\n", indent, e.Passthrough.Step))
+		f.write(fmt.Sprintf("%spassthrough step = %d", indent, e.Passthrough.Step))
+		if e.Passthrough.Name != nil && e.Passthrough.Name.Value != "" {
+			f.write(" name ")
+			f.writeQuoted(e.Passthrough.Name.Value)
+		}
+		f.write("\n")
+	case e.Preset != nil:
+		f.write(indent + "preset " + e.Preset.Name + " {\n")
+		if e.Preset.Body != nil {
+			for _, ve := range e.Preset.Body.Entries {
+				if ve == nil {
+					continue
+				}
+				if ve.Desc != nil {
+					f.write(indent + "  desc ")
+					f.writeQuoted(ve.Desc.Text.Value)
+					f.write("\n")
+				}
+				if ve.Steps != nil && len(ve.Steps.Steps) > 0 {
+					f.write(indent + "  steps {")
+					if len(ve.Steps.Steps) == 1 {
+						f.write(" ")
+						f.writeStep(ve.Steps.Steps[0])
+						f.write(" }\n")
+					} else {
+						for _, s := range ve.Steps.Steps {
+							f.write("\n" + indent + "    ")
+							f.writeStep(s)
+						}
+						f.write("\n" + indent + "  }\n")
+					}
+				}
+				if ve.Argv != nil {
+					f.write(indent + "  argv [")
+					for i, elem := range ve.Argv.Argv {
+						if i > 0 {
+							f.write(", ")
+						}
+						f.writeExecElem(elem)
+					}
+					f.write("]\n")
+				}
+				if ve.Env != nil && len(ve.Env.Pairs) > 0 {
+					f.write(indent + "  env {")
+					for _, p := range ve.Env.Pairs {
+						f.write(" " + p.Key + " ")
+						f.writeEnvValue(p.Value)
+					}
+					f.write(" }\n")
+				}
+			}
+		}
+		f.write(indent + "}\n")
+	case e.Pool != nil:
+		f.write(indent + "pool " + e.Pool.Name + "\n")
+	case e.Mutex != nil:
+		f.write(indent + "mutex " + e.Mutex.Name + "\n")
 	case e.Steps != nil:
 		f.write(indent + "steps {")
 		if len(e.Steps.Steps) == 0 {
@@ -288,12 +396,7 @@ func (f *formatter) writeStep(s *Step) {
 }
 
 func (f *formatter) writeExecElem(e ExecElem) {
-	s := string(e)
-	if needsQuoting(s) {
-		f.writeQuoted(s)
-	} else {
-		f.write(s)
-	}
+	f.writeQuoted(e.Value)
 }
 
 func (f *formatter) writeEnvValue(v EnvValue) {
@@ -339,9 +442,21 @@ func (f *formatter) writeSuite(s *SuiteBlock) {
 		return
 	}
 	f.write("suite " + s.Name + " {\n")
-	// One target per line so we can add multi-token lines (e.g. "test cover") later.
-	for _, t := range s.Targets {
-		f.write("  " + t + "\n")
+	// Order suite entries (target names or "target preset") by name.
+	entries := make([]*SuiteEntry, 0, len(s.Entries))
+	for _, e := range s.Entries {
+		if e != nil {
+			entries = append(entries, e)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Raw() < entries[j].Raw() })
+	for _, e := range entries {
+		if e.Ident != nil {
+			f.write("  " + e.Ident.V + "\n")
+		} else if e.Quoted != nil {
+			raw := e.Raw()
+			f.write("  " + strings.Replace(raw, " ", ".", 1) + "\n")
+		}
 	}
 	f.write("}\n")
 }

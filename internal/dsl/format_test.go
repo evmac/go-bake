@@ -52,6 +52,75 @@ suite dev { build }`
 	}
 }
 
+func TestFormatFileOrderSuitesProfilesTargets(t *testing.T) {
+	// Formatter orders file entries: suites (by name), then profiles (by name), then targets (by name). Suite entries sorted by name.
+	src := `target zebra { steps { exec ["true"] } }
+suite dev { zebra }
+target alpha { steps { exec ["true"] } }
+suite ci { alpha zebra }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	formatted := buf.String()
+	// Suites first (ci, dev alphabetical), then targets (alpha, zebra alphabetical).
+	if idxCi, idxDev := strings.Index(formatted, "suite ci"), strings.Index(formatted, "suite dev"); idxCi < 0 || idxDev < 0 || idxCi >= idxDev {
+		t.Errorf("suites should be ordered by name (ci before dev): %s", formatted)
+	}
+	idxAlpha := strings.Index(formatted, "target alpha")
+	idxZebra := strings.Index(formatted, "target zebra")
+	if idxAlpha < 0 || idxZebra < 0 {
+		t.Errorf("should contain target alpha and zebra: %s", formatted)
+	}
+	if idxAlpha >= 0 && idxZebra >= 0 && idxAlpha > idxZebra {
+		t.Errorf("targets should be ordered by name (alpha before zebra): %s", formatted)
+	}
+	// Suites must appear before targets.
+	if idxSuite := strings.Index(formatted, "suite "); idxSuite >= 0 && idxAlpha >= 0 && idxSuite > idxAlpha {
+		t.Errorf("suites should come before targets: %s", formatted)
+	}
+	// suite ci entries should be sorted: alpha, zebra
+	if i := strings.Index(formatted, "suite ci"); i >= 0 {
+		rest := formatted[i:]
+		if j := strings.Index(rest, "}"); j >= 0 {
+			block := rest[:j]
+			if strings.Index(block, "alpha") > strings.Index(block, "zebra") {
+				t.Errorf("suite ci entries should be sorted (alpha before zebra): %s", block)
+			}
+		}
+	}
+}
+
+func TestFormatSuitePrecommitRoundTrip(t *testing.T) {
+	// suite precommit round-trips as a normal suite (no special keyword)
+	src := `target lint { desc "lint" steps { exec ["true"] } }
+suite precommit { lint }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	formatted := buf.String()
+	ast2, err := Parser.ParseString("", formatted)
+	if err != nil {
+		t.Fatalf("re-parse: %v\n%s", err, formatted)
+	}
+	cfg, err := Compile(ast2)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cfg.SuiteByName("precommit") == nil {
+		t.Error("suite precommit should exist after round-trip")
+	}
+}
+
 func TestFormatNeedsQuoting(t *testing.T) {
 	tests := []struct {
 		s    string
@@ -263,7 +332,6 @@ func TestFormatTargetWithCwd(t *testing.T) {
 	}
 }
 
-
 func TestFormatTargetWithMultipleSteps(t *testing.T) {
 	src := `target t {
   steps {
@@ -384,7 +452,7 @@ func TestFormatProfileWithDotenvInBody(t *testing.T) {
 		Name: "eu",
 		Body: &ProfileBody{
 			Entries: []*ProfileBodyEntry{
-				{Dotenv: &ProfileDotenvClause{Paths: []ExecElem{ExecElem(".env.eu")}}},
+				{Dotenv: &ProfileDotenvClause{Paths: []ExecElem{NewExecElem(".env.eu")}}},
 				{Env: &EnvBlock{Pairs: []*EnvPair{{Key: "REGION", Value: EnvValue("eu")}}}},
 			},
 		},
@@ -437,6 +505,205 @@ func mustParseTarget(t *testing.T, src string) *TargetBlock {
 		t.Fatal("expected one target entry")
 	}
 	return ast.Entries[0].Target
+}
+
+func TestFormatTargetWithTags(t *testing.T) {
+	ast := &Bakefile{Entries: []*FileEntry{{
+		Target: &TargetBlock{
+			Name: "t",
+			Body: &TargetBody{Entries: []*BodyEntry{
+				{Tags: &TagsClause{Tags: []string{"ci", "fast"}}},
+				{Steps: &StepsBlock{Steps: []*Step{{Exec: &ExecStep{Argv: []ExecElem{NewExecElem("true")}}}}}},
+			}},
+		},
+	}}}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "tags") || !strings.Contains(out, "ci") || !strings.Contains(out, "fast") {
+		t.Errorf("format should include tags: %s", out)
+	}
+}
+
+func TestFormatTargetWithPrivate(t *testing.T) {
+	src := `target internal { private steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "private") {
+		t.Errorf("format should include private: %s", out)
+	}
+}
+
+func TestFormatTargetWithPassthrough(t *testing.T) {
+	src := `target test { passthrough step = 1 name "go test" steps { exec ["go", "test", "./..."] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "passthrough step = 1") || !strings.Contains(out, "name") {
+		t.Errorf("format should include passthrough: %s", out)
+	}
+}
+
+func TestFormatTargetWithPreset(t *testing.T) {
+	src := `target test {
+  steps { exec ["go", "test", "./..."] }
+  preset cover {
+    desc "with coverage"
+    argv ["-coverprofile=c.out"]
+    env { VERBOSE on }
+  }
+}`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "preset cover") || !strings.Contains(out, "desc") || !strings.Contains(out, "argv [") || !strings.Contains(out, "env {") {
+		t.Errorf("format should include preset with desc, argv, env: %s", out)
+	}
+	ast2, err := Parser.ParseString("", out)
+	if err != nil {
+		t.Fatalf("re-parse: %v\n%s", err, out)
+	}
+	cfg, err := Compile(ast2)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("test")
+	if tgt == nil || len(tgt.Presets) != 1 || tgt.Presets[0].Name != "cover" {
+		t.Errorf("round-trip preset: got %+v", tgt)
+	}
+}
+
+func TestFormatTargetWithPresetSteps(t *testing.T) {
+	src := `target test {
+  steps { exec ["go", "test"] }
+  preset bench {
+    steps {
+      exec ["go", "test", "-bench=."]
+      exec ["echo", "done"]
+    }
+  }
+}`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "preset bench") || !strings.Contains(out, "steps {") || !strings.Contains(out, "bench=.") {
+		t.Errorf("format should include preset with steps: %s", out)
+	}
+}
+
+func TestFormatTargetWithPresetSingleStep(t *testing.T) {
+	src := `target test {
+  steps { exec ["go", "test"] }
+  preset bench {
+    steps { exec ["go", "test", "-bench=."] }
+  }
+}`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "preset bench") || !strings.Contains(out, "steps {") {
+		t.Errorf("format should include preset with single step: %s", out)
+	}
+}
+
+func TestFormatSuiteWithQuotedEntry(t *testing.T) {
+	src := `target test { steps { exec ["true"] } }
+suite ci { "test cover" }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "test.cover") {
+		t.Errorf("quoted suite entry should format as test.cover: %s", out)
+	}
+}
+
+func TestExecElemString(t *testing.T) {
+	e := ExecElem{Value: "hello", Quoted: true}
+	if e.String() != "hello" {
+		t.Errorf("String() = %q, want %q", e.String(), "hello")
+	}
+	e2 := ExecElem{Value: "world", Quoted: false}
+	if e2.String() != "world" {
+		t.Errorf("String() = %q, want %q", e2.String(), "world")
+	}
+}
+
+func TestSuiteEntryRawNil(t *testing.T) {
+	var e *SuiteEntry
+	if e.Raw() != "" {
+		t.Errorf("nil SuiteEntry.Raw() = %q, want empty", e.Raw())
+	}
+}
+
+func TestFormatTargetWithPool(t *testing.T) {
+	src := `target deploy { pool production steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pool production") {
+		t.Errorf("format should include pool: %s", out)
+	}
+}
+
+func TestFormatTargetWithMutex(t *testing.T) {
+	src := `target deploy { mutex deploy_lock steps { exec ["true"] } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "mutex deploy_lock") {
+		t.Errorf("format should include mutex: %s", out)
+	}
 }
 
 func TestFormatFormatterStopsOnError(t *testing.T) {

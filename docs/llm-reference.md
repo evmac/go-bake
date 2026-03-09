@@ -5,7 +5,7 @@ Use this for reliable Bakefile generation.
 ## Structure
 
 - **dotenv** — `dotenv .env .env.local`
-- **suite** — `suite name { target1 target2 }`
+- **suite** — `suite name { target1 target2 target.preset }`
 - **target** — `target name { ... }` or single-line `target name cmd prog arg1 arg2`
 
 ## Target body (bracketed)
@@ -18,6 +18,7 @@ Use this for reliable Bakefile generation.
 - **desc** — `desc "one line"`
 - **tags** — `tags t1 t2`
 - **passthrough** — `passthrough step = 1`
+- **preset** — `preset name { desc "..." argv ["flag"] env { K V } steps { exec [...] } }` — named preset (argv appends, env overlays, steps replaces)
 
 ## Step forms
 
@@ -30,11 +31,25 @@ Use this for reliable Bakefile generation.
 - `{{.argName}}` — declared arg
 - `{{.live.key}}` — live (undeclared) arg
 
+## CLI (relevant for generation)
+
+- **bake lint** — Lint Bakefile; `--fix` to auto-fix (prefer `exec` over `cmd`, brackets). Prefer `exec` and `desc` for targets when generating.
+- **bake --watch &lt;target&gt;** — Re-run when inputs change.
+
 ## Example
 
 ```bake
 dotenv .env
-target build { steps { exec ["go","build","./..."] } }
-target test { deps build steps { exec ["go","test","./..."] } }
+target build { desc "build binary" steps { exec ["go","build","./..."] } }
+target test {
+  desc "run tests"
+  deps build
+  steps { exec ["go","test","./..."] }
+  preset cover {
+    desc "run tests with coverage"
+    argv ["-coverprofile=coverage.out"]
+  }
+}
 suite dev { build test }
+suite ci { build test.cover }
 ```

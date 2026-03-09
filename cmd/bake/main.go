@@ -12,10 +12,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/evmac/go-bake/internal/cache"
+	"github.com/evmac/go-bake/internal/watch"
 
 	"github.com/evmac/go-bake/internal/config"
 	"github.com/evmac/go-bake/internal/dsl"
 	"github.com/evmac/go-bake/internal/env"
+	"github.com/evmac/go-bake/internal/lint"
 	"github.com/evmac/go-bake/internal/resolve"
 	"github.com/evmac/go-bake/internal/runner"
 )
@@ -82,6 +87,11 @@ func RunMain(args []string) (int, error) {
 	whatDependsOn := fs.String("what-depends-on", "", "List targets that depend on the given target")
 	profileName := fs.String("profile", "", "Use named profile (env/dotenv overlay); or set BAKE_PROFILE")
 	choose := fs.Bool("choose", false, "Interactive menu to pick a target; without TTY prints list (pipe to fzf)")
+	jsonOut := fs.Bool("json", false, "Emit NDJSON event stream to stdout (run events); step output goes to stderr")
+	maxParallel := fs.Int("max-parallel", 1, "Max targets to run at once (by level); 1 = sequential")
+	timing := fs.Bool("timing", false, "Print per-target duration summary after run")
+	artifacts := fs.Bool("artifacts", false, "Print output paths of targets that produced artifacts")
+	watch := fs.Bool("watch", false, "Re-run target when inputs change (poll-based)")
 	debug := fs.Bool("debug", false, "Enable debug logging (or set BAKE_DEBUG=1)")
 	var setVals setFlags
 	fs.Var(&setVals, "set", "Override env or args: --set env.FOO=bar or --set args.NAME=value (repeatable)")
@@ -113,6 +123,26 @@ func RunMain(args []string) (int, error) {
 				return code, err
 			}
 			return 0, nil
+		}
+		if target == "lint" {
+			lintFs := flag.NewFlagSet("bake lint", flag.ContinueOnError)
+			lintFix := lintFs.Bool("fix", false, "apply auto-fixes where possible")
+			lintConfig := lintFs.String("config", "", "path to linter config (default: .bake/config in Bakefile dir)")
+			lintJSON := lintFs.Bool("json", false, "output findings as NDJSON")
+			lintDisable := lintFs.String("disable", "", "disable a lint rule by ID and persist to config")
+			_ = lintFs.Parse(posArgs[1:])
+			if *lintDisable != "" {
+				code, err := runLintDisable(*lintDisable, *lintConfig)
+				if err != nil {
+					return code, err
+				}
+				return code, nil
+			}
+			code, err := runLint(*lintFix, *lintConfig, *lintJSON)
+			if err != nil {
+				return code, err
+			}
+			return code, nil
 		}
 	}
 
@@ -153,13 +183,38 @@ func RunMain(args []string) (int, error) {
 		return 0, nil
 	}
 	if len(posArgs) == 0 {
-		if err := runDefault(cliEnv, cliArgs, *profileName, *showCmd); err != nil {
+		if err := runDefault(cliEnv, cliArgs, *profileName, *showCmd, *jsonOut, *maxParallel, *timing, *artifacts); err != nil {
 			return 2, err
 		}
 		return 0, nil
 	}
 	target := posArgs[0]
+	if *watch {
+		if err := runWatch(context.Background(), target, posArgs[1:], cliEnv, cliArgs, *profileName, *showCmd, *maxParallel); err != nil {
+			return 2, err
+		}
+		return 0, nil
+	}
 	if target == "install" {
+		sub := ""
+		if len(posArgs) > 1 {
+			sub = posArgs[1]
+		}
+		if sub == "shims" {
+			if err := runInstallShims(); err != nil {
+				return 2, err
+			}
+			return 0, nil
+		}
+		if sub == "hooks" {
+			if err := runInstallHooks(); err != nil {
+				return 2, err
+			}
+			return 0, nil
+		}
+		if sub != "" {
+			return 2, fmt.Errorf("unknown install subcommand %q (use: install, install shims, install hooks)", sub)
+		}
 		if err := runInstall(); err != nil {
 			return 2, err
 		}
@@ -177,20 +232,25 @@ func RunMain(args []string) (int, error) {
 		}
 	}
 	if su := cfg.SuiteByName(target); su != nil {
-		for _, name := range su.Targets {
-			tgt := cfg.TargetByName(name)
+		for _, entry := range su.Targets {
+			targetName, presetName := config.ParseSuiteEntry(entry)
+			tgt := cfg.TargetByName(targetName)
 			if tgt == nil {
 				continue
 			}
-			declared, live, passthrough, _ := resolve.ParseArgs(tgt, nil)
+			var preset *config.Preset
+			if presetName != "" {
+				preset = tgt.PresetByName(presetName)
+			}
+			declared, live, passthroughByStep, _ := resolve.ParseArgs(tgt, nil)
 			for k, v := range cliArgs {
 				declared[k] = v
 			}
 			if *dryRun {
-				runDryRun(cfg, name, tgt, declared, live, passthrough, cliEnv)
+				runDryRun(cfg, targetName, tgt, declared, live, passthroughByStep, cliEnv, preset)
 				continue
 			}
-			if err := runTarget(cfg, name, tgt, declared, live, passthrough, cliEnv, profile, *showCmd); err != nil {
+			if err := runTarget(cfg, targetName, tgt, declared, live, passthroughByStep, cliEnv, profile, preset, *showCmd, *jsonOut, *maxParallel, *timing, *artifacts); err != nil {
 				return 1, err
 			}
 		}
@@ -200,7 +260,14 @@ func RunMain(args []string) (int, error) {
 	if tgt == nil {
 		return 2, fmt.Errorf("unknown target %q (use 'bake --list')", target)
 	}
-	declared, live, passthrough, err := resolve.ParseArgs(tgt, posArgs[1:])
+	// Resolve optional preset: bake test cover => target test, preset cover; args start at posArgs[2]
+	argsForTarget := posArgs[1:]
+	var preset *config.Preset
+	if len(posArgs) > 1 && !strings.HasPrefix(posArgs[1], "-") && tgt.PresetByName(posArgs[1]) != nil {
+		preset = tgt.PresetByName(posArgs[1])
+		argsForTarget = posArgs[2:]
+	}
+	declared, live, passthroughByStep, err := resolve.ParseArgs(tgt, argsForTarget)
 	if err != nil {
 		return 2, err
 	}
@@ -208,10 +275,10 @@ func RunMain(args []string) (int, error) {
 		declared[k] = v
 	}
 	if *dryRun {
-		runDryRun(cfg, target, tgt, declared, live, passthrough, cliEnv)
+		runDryRun(cfg, target, tgt, declared, live, passthroughByStep, cliEnv, preset)
 		return 0, nil
 	}
-	if err := runTarget(cfg, target, tgt, declared, live, passthrough, cliEnv, profile, *showCmd); err != nil {
+	if err := runTarget(cfg, target, tgt, declared, live, passthroughByStep, cliEnv, profile, preset, *showCmd, *jsonOut, *maxParallel, *timing, *artifacts); err != nil {
 		return 1, err
 	}
 	return 0, nil
@@ -222,7 +289,106 @@ func loadConfig() (*config.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureBakefileFormatLint(path); err != nil {
+		return nil, err
+	}
 	return dsl.LoadWithImports(path)
+}
+
+// ensureBakefileFormatLint runs format -w and lint --fix on the Bakefile at path unless
+// BAKE_NO_AUTOFORMAT or BAKE_NO_AUTOLINT are set. Used automatically when loading config.
+// Lint applies fixes and only surfaces unfixable errors; does not fail the load.
+func ensureBakefileFormatLint(path string) error {
+	if os.Getenv("BAKE_NO_AUTOFORMAT") == "" {
+		if _, err := runFormatAtPath(path, true, false); err != nil {
+			return err
+		}
+	}
+	if os.Getenv("BAKE_NO_AUTOLINT") == "" {
+		if _, err := runLintAtPath(path, "", true, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runLint(applyFix bool, configPath string, jsonOut bool) (int, error) {
+	_, bakePath, err := config.FindBakefile(".")
+	if err != nil {
+		return 2, err
+	}
+	return runLintAtPath(bakePath, configPath, applyFix, jsonOut)
+}
+
+// runLintAtPath runs the linter on the Bakefile at path. When applyFix is true, applies fixes,
+// writes the file, then reports only unfixable findings (fix all errors, surface only those it can't fix).
+func runLintAtPath(bakePath, configPath string, applyFix, jsonOut bool) (int, error) {
+	bakeDir := filepath.Dir(bakePath)
+	if configPath == "" {
+		configPath = lint.ConfigPath(bakeDir)
+	}
+	lintCfg, err := lint.LoadConfig(configPath)
+	if err != nil {
+		return 2, err
+	}
+	findings, ast, err := lint.RunFromPath(bakePath, lintCfg)
+	if err != nil {
+		return 2, err
+	}
+	if applyFix && len(findings) > 0 {
+		fixableCount := 0
+		for _, f := range findings {
+			if f.Fixable {
+				fixableCount++
+			}
+		}
+		if fixableCount > 0 {
+			lint.ApplyFixes(ast, findings)
+			var buf bytes.Buffer
+			if err := dsl.Format(ast, &buf); err != nil {
+				return 2, err
+			}
+			if err := os.WriteFile(bakePath, buf.Bytes(), 0644); err != nil {
+				return 2, err
+			}
+		}
+		// After applying fixes, report only unfixable findings.
+		var unfixable []lint.Finding
+		for _, f := range findings {
+			if !f.Fixable {
+				unfixable = append(unfixable, f)
+			}
+		}
+		findings = unfixable
+	}
+	if err := lint.PrintFindings(os.Stderr, findings, jsonOut); err != nil {
+		return 2, err
+	}
+	if len(findings) > 0 {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func runLintDisable(ruleID, configPath string) (int, error) {
+	_, bakePath, err := config.FindBakefile(".")
+	if err != nil {
+		return 2, err
+	}
+	bakeDir := filepath.Dir(bakePath)
+	if configPath == "" {
+		configPath = lint.ConfigPath(bakeDir)
+	}
+	cfg, err := lint.LoadConfig(configPath)
+	if err != nil {
+		return 2, err
+	}
+	cfg.DisableRule(ruleID)
+	if err := cfg.WriteConfig(configPath); err != nil {
+		return 2, fmt.Errorf("write config: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "bake: disabled lint rule %q in %s\n", ruleID, configPath)
+	return 0, nil
 }
 
 func runList(ciMode, withStatus bool) error {
@@ -236,10 +402,11 @@ func runList(ciMode, withStatus bool) error {
 	}
 	targets := cfg.Targets
 	if su := cfg.SuiteByName(suiteName); su != nil {
-		// Filter to only targets in this suite
+		// Filter to only targets in this suite (each entry is "target" or "target preset")
 		names := make(map[string]bool)
-		for _, n := range su.Targets {
-			names[n] = true
+		for _, entry := range su.Targets {
+			targetName, _ := config.ParseSuiteEntry(entry)
+			names[targetName] = true
 		}
 		var filtered []*config.Target
 		for _, t := range cfg.Targets {
@@ -289,7 +456,7 @@ func runList(ciMode, withStatus bool) error {
 	return nil
 }
 
-func runDefault(cliEnv, cliArgs map[string]string, profileName string, showCmd bool) error {
+func runDefault(cliEnv, cliArgs map[string]string, profileName string, showCmd, jsonMode bool, maxParallel int, timing, artifacts bool) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -313,10 +480,10 @@ func runDefault(cliEnv, cliArgs map[string]string, profileName string, showCmd b
 	for k, v := range cliArgs {
 		declared[k] = v
 	}
-	return runTarget(cfg, name, tgt, declared, live, nil, cliEnv, profile, showCmd)
+	return runTarget(cfg, name, tgt, declared, live, nil, cliEnv, profile, nil, showCmd, jsonMode, maxParallel, timing, artifacts)
 }
 
-func runTarget(cfg *config.File, name string, tgt *config.Target, declared, live map[string]string, passthrough []string, cliEnv map[string]string, profile *config.Profile, showCmd bool) error {
+func runTarget(cfg *config.File, name string, tgt *config.Target, declared, live map[string]string, passthroughByStep map[int][]string, cliEnv map[string]string, profile *config.Profile, preset *config.Preset, showCmd, jsonMode bool, maxParallel int, timing, artifacts bool) error {
 	if tgt == nil {
 		return fmt.Errorf("unknown target %q (use 'bake --list')", name)
 	}
@@ -336,19 +503,150 @@ func runTarget(cfg *config.File, name string, tgt *config.Target, declared, live
 		targetEnv = mergeEnv(profile.Env, tgt.Env)
 	}
 	opts := runner.RunOptions{
-		RootDir:      cfg.RootDir,
-		Dotenv:       dotenv,
-		TargetEnv:    targetEnv,
-		CLIEnv:       cliEnv,
-		DeclaredArgs: declared,
-		LiveArgs:     live,
-		Passthrough:  passthrough,
-		ShowCmd:      showCmd,
+		RootDir:           cfg.RootDir,
+		Dotenv:            dotenv,
+		TargetEnv:         targetEnv,
+		CLIEnv:            cliEnv,
+		DeclaredArgs:      declared,
+		LiveArgs:          live,
+		PassthroughByStep: passthroughByStep,
+		Preset:            preset,
+		ShowCmd:           showCmd,
+		MaxParallel:       maxParallel,
 	}
-	return runner.Run(context.Background(), cfg, name, opts)
+	if jsonMode {
+		opts.EventWriter = os.Stdout
+		opts.StepStdout = os.Stderr
+		opts.StepStderr = os.Stderr
+	}
+	var timings []struct {
+		Name     string
+		Duration time.Duration
+	}
+	var artifactList []struct {
+		Target string
+		Paths  []string
+	}
+	if timing {
+		opts.TimingReporter = func(n string, d time.Duration) {
+			timings = append(timings, struct {
+				Name     string
+				Duration time.Duration
+			}{n, d})
+		}
+	}
+	if artifacts {
+		opts.ArtifactReporter = func(n string, p []string) {
+			artifactList = append(artifactList, struct {
+				Target string
+				Paths  []string
+			}{n, p})
+		}
+	}
+	err := runner.Run(context.Background(), cfg, name, opts)
+	if err != nil {
+		return err
+	}
+	if timing && len(timings) > 0 {
+		for _, t := range timings {
+			fmt.Fprintf(os.Stderr, "%s\t%v\n", t.Name, t.Duration.Round(time.Millisecond))
+		}
+	}
+	if artifacts && len(artifactList) > 0 {
+		for _, a := range artifactList {
+			for _, p := range a.Paths {
+				fmt.Fprintf(os.Stderr, "%s\t%s\n", a.Target, p)
+			}
+		}
+	}
+	return nil
 }
 
-func runDryRun(cfg *config.File, name string, tgt *config.Target, declared, live map[string]string, passthrough []string, cliEnv map[string]string) {
+// inputPathsForRun returns resolved input paths (relative to cfg.RootDir) for target and all its deps.
+func inputPathsForRun(cfg *config.File, targetName string) ([]string, error) {
+	order, err := runner.TopoOrder(cfg, targetName)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	var out []string
+	data := resolve.TemplateData(nil, nil)
+	for _, name := range order {
+		t := cfg.TargetByName(name)
+		if t == nil || len(t.Inputs) == 0 {
+			continue
+		}
+		expanded, err := resolve.ExpandArgv(t.Inputs, data)
+		if err != nil {
+			return nil, err
+		}
+		resolved, err := cache.ResolveGlobs(cfg.RootDir, expanded)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range resolved {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out, nil
+}
+
+func runWatch(ctx context.Context, target string, restArgs []string, cliEnv, cliArgs map[string]string, profileName string, showCmd bool, maxParallel int) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	var profile *config.Profile
+	if profileName != "" {
+		profile = cfg.ProfileByName(profileName)
+		if profile == nil {
+			return fmt.Errorf("unknown profile %q", profileName)
+		}
+	}
+	tgt := cfg.TargetByName(target)
+	if tgt == nil {
+		return fmt.Errorf("unknown target %q (use 'bake --list')", target)
+	}
+	argsForTarget := restArgs
+	var preset *config.Preset
+	if len(restArgs) > 0 && !strings.HasPrefix(restArgs[0], "-") && tgt.PresetByName(restArgs[0]) != nil {
+		preset = tgt.PresetByName(restArgs[0])
+		argsForTarget = restArgs[1:]
+	}
+	declared, live, passthroughByStep, err := resolve.ParseArgs(tgt, argsForTarget)
+	if err != nil {
+		return err
+	}
+	for k, v := range cliArgs {
+		declared[k] = v
+	}
+	paths, err := inputPathsForRun(cfg, target)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		// No inputs to watch; run once and exit (or watch nothing and run on timer is odd)
+		return runTarget(cfg, target, tgt, declared, live, passthroughByStep, cliEnv, profile, preset, showCmd, false, 1, false, false)
+	}
+	doRun := func() error {
+		return runTarget(cfg, target, tgt, declared, live, passthroughByStep, cliEnv, profile, preset, showCmd, false, 1, false, false)
+	}
+	if err := doRun(); err != nil {
+		return err
+	}
+	watch.Poll(ctx, cfg.RootDir, paths, 300*time.Millisecond, 200*time.Millisecond, func() {
+		if err := doRun(); err != nil {
+			fmt.Fprintf(os.Stderr, "bake: %v\n", err)
+			os.Exit(1)
+		}
+	})
+	return nil
+}
+
+func runDryRun(cfg *config.File, name string, tgt *config.Target, declared, live map[string]string, passthroughByStep map[int][]string, cliEnv map[string]string, preset *config.Preset) {
 	order, _ := runner.TopoOrder(cfg, name)
 	for _, n := range order {
 		fmt.Printf("target %s\n", n)
@@ -356,14 +654,31 @@ func runDryRun(cfg *config.File, name string, tgt *config.Target, declared, live
 		if t == nil {
 			continue
 		}
+		var stepPreset *config.Preset
+		if n == name && preset != nil {
+			stepPreset = preset
+		}
+		passthroughStep := t.PassthroughStep
+		if len(t.Passthrough) > 0 {
+			passthroughStep = t.Passthrough[0].Step
+		}
+		if passthroughStep <= 0 && len(t.Steps) > 0 {
+			passthroughStep = len(t.Steps)
+		}
 		data := resolve.TemplateData(declared, live)
 		for i, step := range t.Steps {
 			argv := step.Argv
 			if len(data) > 0 {
 				argv, _ = resolve.ExpandArgv(argv, data)
 			}
-			if i+1 == t.PassthroughStep || (t.PassthroughStep <= 0 && i+1 == len(t.Steps)) {
-				argv = append(argv, passthrough...)
+			stepNum := i + 1
+			if stepNum == passthroughStep {
+				if stepPreset != nil && len(stepPreset.Argv) > 0 {
+					argv = append(argv, stepPreset.Argv...)
+				}
+				if passthroughByStep != nil && len(passthroughByStep[stepNum]) > 0 {
+					argv = append(argv, passthroughByStep[stepNum]...)
+				}
 			}
 			if len(argv) > 0 {
 				fmt.Printf("  step %d: %v\n", i+1, argv)
@@ -565,7 +880,7 @@ func runChoose(ciMode bool, profileName string, showCmd bool, cliEnv, cliArgs ma
 	for k, v := range cliArgs {
 		declared[k] = v
 	}
-	return runTarget(cfg, chosen.Name, chosen, declared, live, nil, cliEnv, profile, showCmd)
+	return runTarget(cfg, chosen.Name, chosen, declared, live, nil, cliEnv, profile, nil, showCmd, false, 1, false, false) // maxParallel 1 for choose
 }
 
 func runWhatDependsOn(targetName string) error {
@@ -634,6 +949,11 @@ func runFormat(write, check bool) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	return runFormatAtPath(path, write, check)
+}
+
+// runFormatAtPath formats the Bakefile at path. Used by runFormat and ensureBakefileFormatLint.
+func runFormatAtPath(path string, write, check bool) (int, error) {
 	ast, err := dsl.ParseFile(path)
 	if err != nil {
 		return 2, err
@@ -677,7 +997,65 @@ func runFormat(write, check bool) (int, error) {
 	return 0, err
 }
 
+// runInstall installs all components: ensures a minimal Bakefile exists, then installs shims and hooks.
 func runInstall() error {
+	if err := ensureMinimalBakefile(); err != nil {
+		return err
+	}
+	if err := runInstallShims(); err != nil {
+		return err
+	}
+	if err := runInstallHooks(); err != nil {
+		// Not a git repo or other hooks error: warn but don't fail
+		fmt.Fprintf(os.Stderr, "bake: %v\n", err)
+	}
+	return nil
+}
+
+func ensureMinimalBakefile() error {
+	_, _, err := config.FindBakefile(".")
+	if err == nil {
+		return nil
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+	// Prefer repo root if we're in a git repo
+	if root := findGitRoot(dir); root != "" {
+		dir = root
+	}
+	bakePath := filepath.Join(dir, "Bakefile")
+	// Minimal Bakefile: one target, one suite
+	const minimal = `target build { desc "build" steps { exec ["true"] } }
+suite dev { build }
+`
+	if err := os.WriteFile(bakePath, []byte(minimal), 0644); err != nil {
+		return fmt.Errorf("create Bakefile: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "bake: created minimal Bakefile at %s\n", bakePath)
+	return nil
+}
+
+func findGitRoot(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	d := abs
+	for {
+		if st, err := os.Stat(filepath.Join(d, ".git")); err == nil && st.IsDir() {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+		d = parent
+	}
+}
+
+func runInstallShims() error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -705,5 +1083,38 @@ func runInstall() error {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "bake: installed shims in %s (add to PATH: export PATH=\"%s:$PATH\")\n", binDir, binDir)
+	return nil
+}
+
+func runInstallHooks() error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.SuiteByName("precommit") == nil {
+		return fmt.Errorf("no suite precommit defined; add 'suite precommit { ... }' to your Bakefile to install hooks")
+	}
+	gitDir := filepath.Join(cfg.RootDir, ".git")
+	if st, err := os.Stat(gitDir); err != nil || !st.IsDir() {
+		return fmt.Errorf("not a git repo (no .git in %s)", cfg.RootDir)
+	}
+	rootAbs, err := filepath.Abs(cfg.RootDir)
+	if err != nil {
+		return fmt.Errorf("resolve root dir: %w", err)
+	}
+	hooksDir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		return fmt.Errorf("create hooks dir: %w", err)
+	}
+	bakeExe, err := os.Executable()
+	if err != nil {
+		bakeExe = "bake"
+	}
+	script := fmt.Sprintf("#!/bin/sh\nset -e\ncd %s\n%q precommit\n", strconv.Quote(rootAbs), bakeExe)
+	hookPath := filepath.Join(hooksDir, "pre-commit")
+	if err := os.WriteFile(hookPath, []byte(script), 0755); err != nil {
+		return fmt.Errorf("write pre-commit hook: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "bake: installed pre-commit hook at %s (runs: bake precommit)\n", hookPath)
 	return nil
 }

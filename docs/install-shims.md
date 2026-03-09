@@ -1,6 +1,6 @@
-# Installing shims with `bake install`
+# Installing shims with `bake install shims`
 
-The `bake install` command generates **shims** (simple shell wrapper scripts) for each target and suite defined in your Bakefile. These shims are placed in a local directory: `.bake/bin/`. By adding this directory to your `$PATH`, you can run your build targets directly as shell commands, without needing to type `bake` each time.
+The **`bake install shims`** command (or **`bake install`**, which installs all components) generates **shims** (simple shell wrapper scripts) for each target and suite defined in your Bakefile. These shims are placed in a local directory: `.bake/bin/`. By adding this directory to your `$PATH`, you can run your build targets directly as shell commands, without needing to type `bake` each time.
 
 For example, if your Bakefile defines these targets:
 
@@ -24,7 +24,7 @@ Now you can run `build` or `test` in your terminal, as long as `.bake/bin` is fi
 
 ## Usage
 
-1. Run `bake install` in your project directory.
+1. Run **`bake install shims`** in your project directory (or **`bake install`** to install all components and create a minimal Bakefile if none exists).
 2. Add `.bake/bin` to your PATH. To do so temporarily in your shell, run:
    
    ```sh
@@ -54,5 +54,5 @@ This passes any arguments you supply through to the underlying bake runner.
 
 ## Design notes
 
-- **`bake install` and PATH** — Shims in `.bake/bin` share names with targets (e.g. `test`, `act`, `ci`). If that dir is first on PATH, steps that run those names would invoke the shim (recursion or wrong tool). The runner therefore strips the project’s `.bake/bin` from PATH when executing steps and when guards, so steps always see system binaries. `bake install` remains safe to use; only subprocess env is sanitized.
+- **`bake install shims` and PATH** — Shims in `.bake/bin` share names with targets (e.g. `test`, `act`, `ci`). If that dir is first on PATH, steps that run those names would invoke the shim (recursion or wrong tool). The runner therefore strips the project’s `.bake/bin` from PATH when executing steps and when guards, so steps always see system binaries. `bake install` remains safe to use; only subprocess env is sanitized.
 

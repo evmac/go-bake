@@ -7,14 +7,53 @@ import (
 	"github.com/evmac/go-bake/internal/config"
 )
 
-// ParseArgs parses args after the target name: declared (--name value, -short value), live (undeclared --k v), and passthrough (after --).
-func ParseArgs(tgt *config.Target, args []string) (declared map[string]string, live map[string]string, passthrough []string, err error) {
+// passthroughSlots returns the ordered list of step indices that receive passthrough (1-based).
+func passthroughSlots(tgt *config.Target) []config.PassthroughSlot {
+	if len(tgt.Passthrough) > 0 {
+		return tgt.Passthrough
+	}
+	if tgt.PassthroughStep > 0 {
+		return []config.PassthroughSlot{{Step: tgt.PassthroughStep}}
+	}
+	return nil
+}
+
+// ParseArgs parses args after the target name: declared (--name value, -short value), live (undeclared --k v), and passthrough by step (after --).
+// When the target has one passthrough slot, args after "--" go to that step. When multiple slots, args are split by "--" in order.
+func ParseArgs(tgt *config.Target, args []string) (declared map[string]string, live map[string]string, passthroughByStep map[int][]string, err error) {
 	declared = make(map[string]string)
 	live = make(map[string]string)
+	slots := passthroughSlots(tgt)
 	for i, a := range args {
 		if a == "--" {
-			passthrough = args[i+1:]
+			rest := args[i+1:]
 			args = args[:i]
+			if len(slots) == 0 {
+				// No passthrough; ignore rest
+			} else if len(slots) == 1 {
+				passthroughByStep = map[int][]string{slots[0].Step: rest}
+			} else {
+				// Split rest by "--" and assign to slots in order
+				passthroughByStep = make(map[int][]string)
+				var blobs [][]string
+				for len(rest) > 0 {
+					j := 0
+					for j < len(rest) && rest[j] != "--" {
+						j++
+					}
+					blobs = append(blobs, rest[:j])
+					if j < len(rest) {
+						rest = rest[j+1:]
+					} else {
+						rest = nil
+					}
+				}
+				for i, slot := range slots {
+					if i < len(blobs) {
+						passthroughByStep[slot.Step] = blobs[i]
+					}
+				}
+			}
 			break
 		}
 	}
@@ -73,7 +112,7 @@ func ParseArgs(tgt *config.Target, args []string) (declared map[string]string, l
 			return nil, nil, nil, fmt.Errorf("required arg %q is missing", a.Name)
 		}
 	}
-	return declared, live, passthrough, nil
+	return declared, live, passthroughByStep, nil
 }
 
 func indexByte(s string, c byte) int {

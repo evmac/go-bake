@@ -3,12 +3,16 @@ package runner
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/evmac/go-bake/internal/cache"
 	"github.com/evmac/go-bake/internal/config"
@@ -16,51 +20,209 @@ import (
 	"github.com/evmac/go-bake/internal/resolve"
 )
 
+// RunEvent is one NDJSON line for machine-readable output (--json).
+type RunEvent struct {
+	Event      string `json:"event"`
+	Ts         string `json:"ts,omitempty"`
+	Target     string `json:"target,omitempty"`
+	Step       int    `json:"step,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Ok         bool   `json:"ok,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
 // RunOptions configures a run (cwd, env, passthrough argv, template data for expansion).
 type RunOptions struct {
-	RootDir      string
-	Dotenv       []string
-	TargetEnv    map[string]string
-	CLIEnv       map[string]string // from --set env.FOO=bar; merged after TargetEnv
-	DeclaredArgs map[string]string // for {{.argName}}
-	LiveArgs     map[string]string // for {{.live.key}}
-	Passthrough  []string          // raw args after "--" to append to passthrough step
-	ShowCmd      bool              // print each command to stderr before running (BAKE_SHOW_CMD or --show-cmd)
+	RootDir           string
+	Dotenv            []string
+	TargetEnv         map[string]string
+	CLIEnv            map[string]string                           // from --set env.FOO=bar; merged after TargetEnv
+	DeclaredArgs      map[string]string                           // for {{.argName}}
+	LiveArgs          map[string]string                           // for {{.live.key}}
+	PassthroughByStep map[int][]string                            // step index (1-based) -> args after "--"; when multiple slots, split by "--"
+	Preset            *config.Preset                              // optional named preset (extra argv + env overlay)
+	ShowCmd           bool                                        // print each command to stderr before running (BAKE_SHOW_CMD or --show-cmd)
+	EventWriter       io.Writer                                   // when set, emit NDJSON run events (for --json)
+	StepStdout        io.Writer                                   // when set (e.g. for --json), step stdout goes here instead of os.Stdout
+	StepStderr        io.Writer                                   // when set (e.g. for --json), step stderr goes here instead of os.Stderr
+	MaxParallel       int                                         // max targets running at once (0 or 1 = sequential; >1 = parallel by level)
+	PoolSems          *sync.Map                                   // optional: name -> chan struct{} (semaphore per pool name)
+	Mutexes           *sync.Map                                   // optional: name -> *sync.Mutex (mutex per name)
+	TimingReporter    func(target string, duration time.Duration) // optional: called when a target finishes (for --timing)
+	ArtifactReporter  func(target string, paths []string)         // optional: called with output paths after a target runs (for --artifacts)
+}
+
+func emitEvent(w io.Writer, e RunEvent) {
+	if w == nil {
+		return
+	}
+	e.Ts = time.Now().UTC().Format(time.RFC3339Nano)
+	b, _ := json.Marshal(e)
+	w.Write(b)
+	w.Write([]byte{'\n'})
 }
 
 // Run builds the DAG, runs dependencies in order, then runs the target's steps.
-// Targets with inputs/outputs use the incremental cache and may be skipped when up to date.
+// When MaxParallel > 1, targets in the same level run concurrently (up to MaxParallel).
 func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptions) error {
+	ev := opts.EventWriter
+	if ev != nil {
+		emitEvent(ev, RunEvent{Event: "run_start", Target: targetName})
+	}
 	tgt := cfg.TargetByName(targetName)
 	if tgt == nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "run_end", Ok: false, Message: "unknown target"})
+		}
 		return fmt.Errorf("unknown target %q", targetName)
-	}
-	order, err := TopoOrder(cfg, targetName)
-	if err != nil {
-		return err
 	}
 	dotenvMap, err := env.LoadDotenv(opts.RootDir, cfg.Dotenv)
 	if err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "run_end", Ok: false, Message: err.Error()})
+		}
 		return err
 	}
-	for _, name := range order {
-		if name == targetName {
-			break
+	// Shared registry for pool semaphores and mutexes (so parallel runs can coordinate).
+	if opts.PoolSems == nil {
+		opts.PoolSems = &sync.Map{}
+	}
+	if opts.Mutexes == nil {
+		opts.Mutexes = &sync.Map{}
+	}
+	if opts.MaxParallel <= 1 {
+		// Sequential: original behavior
+		order, err := TopoOrder(cfg, targetName)
+		if err != nil {
+			if ev != nil {
+				emitEvent(ev, RunEvent{Event: "run_end", Ok: false, Message: err.Error()})
+			}
+			return err
 		}
-		dep := cfg.TargetByName(name)
-		if dep == nil {
-			continue
+		for _, name := range order {
+			if name == targetName {
+				break
+			}
+			dep := cfg.TargetByName(name)
+			if dep == nil {
+				continue
+			}
+			depOpts := RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv, EventWriter: ev}
+			if err := runTargetWithCache(ctx, dep, opts.RootDir, dotenvMap, depOpts); err != nil {
+				if ev != nil {
+					emitEvent(ev, RunEvent{Event: "run_end", Ok: false, Message: err.Error()})
+				}
+				return fmt.Errorf("dep %q: %w", name, err)
+			}
 		}
-		depOpts := RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv}
-		if err := runTargetWithCache(ctx, dep, opts.RootDir, dotenvMap, depOpts); err != nil {
-			return fmt.Errorf("dep %q: %w", name, err)
+		err = runTargetWithCache(ctx, tgt, opts.RootDir, dotenvMap, opts)
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "run_end", Ok: err == nil, Message: errMsg(err)})
+		}
+		return err
+	}
+	// Parallel by level
+	levels, err := LevelOrder(cfg, targetName)
+	if err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "run_end", Ok: false, Message: err.Error()})
+		}
+		return err
+	}
+	var sem = make(chan struct{}, opts.MaxParallel)
+	var firstErr error
+	var mu sync.Mutex
+	for _, level := range levels {
+		var wg sync.WaitGroup
+		for _, name := range level {
+			dep := cfg.TargetByName(name)
+			if dep == nil {
+				continue
+			}
+			runOpts := opts
+			if name != targetName {
+				runOpts = RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv, EventWriter: ev, MaxParallel: opts.MaxParallel, PoolSems: opts.PoolSems, Mutexes: opts.Mutexes}
+			}
+			wg.Add(1)
+			go func(n string, d *config.Target, ro RunOptions) {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = ctx.Err()
+					}
+					mu.Unlock()
+					return
+				}
+				if err := runTargetWithCache(ctx, d, opts.RootDir, dotenvMap, ro); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("%s: %w", n, err)
+					}
+					mu.Unlock()
+				}
+			}(name, dep, runOpts)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			if ev != nil {
+				emitEvent(ev, RunEvent{Event: "run_end", Ok: false, Message: firstErr.Error()})
+			}
+			return firstErr
 		}
 	}
-	return runTargetWithCache(ctx, tgt, opts.RootDir, dotenvMap, opts)
+	if ev != nil {
+		emitEvent(ev, RunEvent{Event: "run_end", Ok: true})
+	}
+	return nil
+}
+
+func errMsg(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func getPoolSem(sm *sync.Map, name string) chan struct{} {
+	v, _ := sm.LoadOrStore(name, make(chan struct{}, 1))
+	return v.(chan struct{})
+}
+
+func getMutex(m *sync.Map, name string) *sync.Mutex {
+	v, _ := m.LoadOrStore(name, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // runTargetWithCache runs the target, skipping if incremental cache says up to date.
 func runTargetWithCache(ctx context.Context, tgt *config.Target, rootDir string, dotenvMap map[string]string, opts RunOptions) error {
+	if tgt.Pool != "" && opts.PoolSems != nil {
+		sem := getPoolSem(opts.PoolSems, tgt.Pool)
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if tgt.Mutex != "" && opts.Mutexes != nil {
+		mu := getMutex(opts.Mutexes, tgt.Mutex)
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	start := time.Now()
+	defer func() {
+		if opts.TimingReporter != nil {
+			opts.TimingReporter(tgt.Name, time.Since(start))
+		}
+	}()
+	ev := opts.EventWriter
+	if ev != nil {
+		emitEvent(ev, RunEvent{Event: "target_start", Target: tgt.Name})
+	}
 	// When guard: skip target (no-op, success for DAG) if condition is false.
 	targetEnv := opts.TargetEnv
 	if targetEnv == nil {
@@ -82,50 +244,84 @@ func runTargetWithCache(ctx context.Context, tgt *config.Target, rootDir string,
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
+			if ev != nil {
+				emitEvent(ev, RunEvent{Event: "when_skip", Target: tgt.Name, Ok: true})
+			}
 			return nil // condition false: skip target
 		}
 	} else if tgt.WhenEnv != "" {
 		if os.Getenv(tgt.WhenEnv) == "" {
+			if ev != nil {
+				emitEvent(ev, RunEvent{Event: "when_skip", Target: tgt.Name, Ok: true})
+			}
 			return nil // condition false: skip target
 		}
 	}
 
 	if len(tgt.Inputs) == 0 || len(tgt.Outputs) == 0 {
-		return runTargetSteps(ctx, tgt, rootDir, dotenvMap, opts)
+		err := runTargetSteps(ctx, tgt, rootDir, dotenvMap, opts)
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: err == nil, Message: errMsg(err)})
+		}
+		return err
 	}
 	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
 	expandedInputs, _ := resolve.ExpandArgv(append([]string{}, tgt.Inputs...), data)
 	expandedOutputs, _ := resolve.ExpandArgv(append([]string{}, tgt.Outputs...), data)
 	inputFiles, err := cache.ResolveGlobs(rootDir, expandedInputs)
 	if err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: false, Message: err.Error()})
+		}
 		return err
 	}
 	outputPaths, err := cache.ResolveGlobs(rootDir, expandedOutputs)
 	if err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: false, Message: err.Error()})
+		}
 		return err
 	}
 	inputHash, inputHashesMap, err := cache.HashFilesMap(rootDir, inputFiles)
 	if err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: false, Message: err.Error()})
+		}
 		return err
 	}
 	stepSig := stepSignature(tgt, rootDir, dotenvMap, opts)
 	key := cache.Key(tgt.Name, inputHash, stepSig)
 	manifest, err := cache.LoadManifest(rootDir, key)
 	if err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: false, Message: err.Error()})
+		}
 		return err
 	}
 	inputHashHex := fmt.Sprintf("%x", inputHash)
 	if manifest != nil && manifest.InputHash == inputHashHex {
 		ok, _ := cache.OutputsExist(rootDir, manifest.OutputPaths)
 		if ok {
+			if ev != nil {
+				emitEvent(ev, RunEvent{Event: "cache_skip", Target: tgt.Name, Ok: true})
+			}
 			return nil
 		}
 	}
 	if err := runTargetSteps(ctx, tgt, rootDir, dotenvMap, opts); err != nil {
+		if ev != nil {
+			emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: false, Message: err.Error()})
+		}
 		return err
 	}
 	outputPaths, _ = cache.ResolveGlobs(rootDir, expandedOutputs)
 	mtimes, _ := cache.RecordOutputMTimes(rootDir, outputPaths)
+	if opts.ArtifactReporter != nil && len(outputPaths) > 0 {
+		opts.ArtifactReporter(tgt.Name, outputPaths)
+	}
+	if ev != nil {
+		emitEvent(ev, RunEvent{Event: "target_end", Target: tgt.Name, Ok: true})
+	}
 	return cache.SaveManifest(rootDir, key, &cache.Manifest{
 		TargetName:   tgt.Name,
 		InputHash:    inputHashHex,
@@ -141,6 +337,20 @@ func stepSignature(tgt *config.Target, rootDir string, dotenvMap map[string]stri
 	if targetEnv == nil {
 		targetEnv = tgt.Env
 	}
+	if opts.Preset != nil && len(opts.Preset.Env) > 0 {
+		if targetEnv == nil {
+			targetEnv = make(map[string]string)
+		} else {
+			copied := make(map[string]string)
+			for k, v := range targetEnv {
+				copied[k] = v
+			}
+			targetEnv = copied
+		}
+		for k, v := range opts.Preset.Env {
+			targetEnv[k] = v
+		}
+	}
 	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
 	mergedEnv := env.Merge(os.Environ(), dotenvMap, targetEnv, opts.CLIEnv)
 	if len(data) > 0 && len(targetEnv) > 0 {
@@ -148,7 +358,18 @@ func stepSignature(tgt *config.Target, rootDir string, dotenvMap map[string]stri
 		mergedEnv = env.Merge(os.Environ(), dotenvMap, exp, opts.CLIEnv)
 	}
 	h := sha256.New()
-	for i, step := range tgt.Steps {
+	stepsForSig := tgt.Steps
+	if opts.Preset != nil {
+		h.Write([]byte("preset:" + opts.Preset.Name))
+		if len(opts.Preset.Steps) > 0 {
+			stepsForSig = opts.Preset.Steps
+		} else {
+			for _, a := range opts.Preset.Argv {
+				h.Write([]byte(a))
+			}
+		}
+	}
+	for i, step := range stepsForSig {
 		argv := append([]string{}, step.Argv...)
 		if len(data) > 0 {
 			argv, _ = resolve.ExpandArgv(argv, data)
@@ -187,6 +408,21 @@ func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dot
 	if targetEnv == nil {
 		targetEnv = tgt.Env
 	}
+	// Apply preset env overlay if present
+	if opts.Preset != nil && len(opts.Preset.Env) > 0 {
+		if targetEnv == nil {
+			targetEnv = make(map[string]string)
+		} else {
+			copied := make(map[string]string)
+			for k, v := range targetEnv {
+				copied[k] = v
+			}
+			targetEnv = copied
+		}
+		for k, v := range opts.Preset.Env {
+			targetEnv[k] = v
+		}
+	}
 	data := resolve.TemplateData(opts.DeclaredArgs, opts.LiveArgs)
 	mergedEnv := env.Merge(os.Environ(), dotenvMap, targetEnv, opts.CLIEnv)
 	// Expand target-level env if we have template data
@@ -202,11 +438,21 @@ func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dot
 	if tgt.Cwd != "" {
 		cwd = filepath.Join(rootDir, tgt.Cwd)
 	}
+	steps := tgt.Steps
 	passthroughStep := tgt.PassthroughStep
-	if passthroughStep <= 0 && len(tgt.Steps) > 0 {
-		passthroughStep = len(tgt.Steps)
+	usePresetArgv := opts.Preset != nil && len(opts.Preset.Argv) > 0
+	if opts.Preset != nil && len(opts.Preset.Steps) > 0 {
+		steps = opts.Preset.Steps
+		usePresetArgv = false // preset steps replace target steps; no argv append
 	}
-	for i, step := range tgt.Steps {
+	if len(tgt.Passthrough) > 0 {
+		// Use first slot for default when no multi-slot; runner uses PassthroughByStep per step
+		passthroughStep = tgt.Passthrough[0].Step
+	}
+	if passthroughStep <= 0 && len(steps) > 0 {
+		passthroughStep = len(steps)
+	}
+	for i, step := range steps {
 		argv := append([]string{}, step.Argv...)
 		if len(data) > 0 {
 			exp, err := resolve.ExpandArgv(argv, data)
@@ -215,8 +461,12 @@ func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dot
 			}
 			argv = exp
 		}
-		if len(opts.Passthrough) > 0 && i+1 == passthroughStep {
-			argv = append(argv, opts.Passthrough...)
+		stepNum := i + 1
+		if usePresetArgv && stepNum == passthroughStep {
+			argv = append(argv, opts.Preset.Argv...)
+		}
+		if opts.PassthroughByStep != nil && len(opts.PassthroughByStep[stepNum]) > 0 {
+			argv = append(argv, opts.PassthroughByStep[stepNum]...)
 		}
 		if len(argv) == 0 {
 			continue
@@ -246,7 +496,29 @@ func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dot
 		if opts.ShowCmd {
 			printCmdToStderr(step.Runner, argv)
 		}
-		if err := runStep(ctx, step.Runner, argv, stepCwd, stepEnv); err != nil {
+		if opts.EventWriter != nil {
+			emitEvent(opts.EventWriter, RunEvent{Event: "step_start", Target: tgt.Name, Step: stepNum})
+		}
+		var stepOut, stepErr io.Writer = os.Stdout, os.Stderr
+		if opts.StepStdout != nil {
+			stepOut = opts.StepStdout
+		}
+		if opts.StepStderr != nil {
+			stepErr = opts.StepStderr
+		}
+		start := time.Now()
+		err := runStep(ctx, step.Runner, argv, stepCwd, stepEnv, stepOut, stepErr)
+		if opts.EventWriter != nil {
+			emitEvent(opts.EventWriter, RunEvent{
+				Event:      "step_end",
+				Target:     tgt.Name,
+				Step:       stepNum,
+				DurationMs: time.Since(start).Milliseconds(),
+				Ok:         err == nil,
+				Message:    errMsg(err),
+			})
+		}
+		if err != nil {
 			return fmt.Errorf("step %d: %w", i+1, err)
 		}
 	}
@@ -289,7 +561,13 @@ func printCmdToStderr(runner string, argv []string) {
 	}
 }
 
-func runStep(ctx context.Context, runner string, argv []string, cwd string, envMap map[string]string) error {
+func runStep(ctx context.Context, runner string, argv []string, cwd string, envMap map[string]string, stdout, stderr io.Writer) error {
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
+	}
 	var cmd *exec.Cmd
 	if runner != "" {
 		// shell: runner -c "argv[0] argv[1] ..." (simplified: join with space)
@@ -301,8 +579,8 @@ func runStep(ctx context.Context, runner string, argv []string, cwd string, envM
 	cmd.Dir = cwd
 	cmd.Env = envMapToSlice(envMap)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	setProcessGroup(cmd)
 	if err := cmd.Run(); err != nil {
 		return err

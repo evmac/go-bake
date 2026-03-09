@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // File is the top-level parsed Bakefile: dotenv list, imports, profiles, targets, suites.
 type File struct {
 	Dotenv   []string
-	Imports  []string  // paths to other Bakefiles (relative or absolute); resolved and merged at load time
+	Imports  []string // paths to other Bakefiles (relative or absolute); resolved and merged at load time
 	Profiles []*Profile
 	Targets  []*Target
 	Suites   []*Suite
@@ -20,17 +21,28 @@ type File struct {
 // Profile is a named overlay of dotenv files and env vars (activated by --profile or BAKE_PROFILE).
 type Profile struct {
 	Name   string
-	Dotenv []string         // paths relative to root; loaded when profile is active
+	Dotenv []string          // paths relative to root; loaded when profile is active
 	Env    map[string]string // env overlay when profile is active
 }
 
-// Suite is a named entrypoint listing target names (e.g. local, ci).
+// Suite is a named entrypoint listing target names or "target preset" (e.g. build, test cover).
 type Suite struct {
 	Name    string
-	Targets []string
+	Targets []string // each is "target" or "target preset" (space-separated)
 
 	// Line and Column are 1-based source positions for error reporting (0 = unknown).
 	Line, Column int
+}
+
+// ParseSuiteEntry splits a suite target entry "target" or "target preset" into (targetName, presetName).
+// presetName is empty if the entry is just a target name.
+func ParseSuiteEntry(entry string) (targetName, presetName string) {
+	parts := strings.SplitN(entry, " ", 2)
+	targetName = strings.TrimSpace(parts[0])
+	if len(parts) == 2 {
+		presetName = strings.TrimSpace(parts[1])
+	}
+	return targetName, presetName
 }
 
 // DefaultTargetName returns the default target: [target.default] or first target name.

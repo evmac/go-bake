@@ -28,7 +28,7 @@ See the container/compose plan for architecture (containers, daemons, lifecycle,
 ## v1.3 — Profiles, CLI, formatter, and discoverability
 
 - [x] **Profiles as overlays** — First-class profile overlays (base → profile → CLI).
-- [x] **Override via CLI** — `--set env.FOO=bar` (explicit flag). Use case: one-off env/args for a run without editing the Bakefile. See [Parameterization](parameterization.md) (passthrough vs overrides vs variants).
+- [x] **Override via CLI** — `--set env.FOO=bar` (explicit flag). Use case: one-off env/args for a run without editing the Bakefile. See [Parameterization](parameterization.md) (passthrough vs overrides vs presets).
 - [x] **Ordering and formatter** — The order stateful entities appear is execution order. Formatter (add or extend) auto-orders entities; **`--check`** verifies Bakefiles are ordered. Checks run before integration (e.g. before baked).
 - [x] **Interactive picker** — `--choose`: menu to select a target; when not a TTY, emit list (one per line) so it can be piped to fzf or similar.
 - [x] **Private targets** — Targets hidden from `--list` (per-target or file-level `private` at top of Bakefile); only callable as deps or by explicit name.
@@ -36,16 +36,19 @@ See the container/compose plan for architecture (containers, daemons, lifecycle,
 - [x] **Reverse deps** — `--what-depends-on <target>`: list targets that depend on the given target (refactoring and impact analysis).
 - [x] **List with status** — Optional `--list` output showing per-target incremental status (would run / skipped) when useful.
 
-## v1.4 — Passthrough, variants, concurrency, watch, CI, and JSON output
+## v1.4 — Passthrough, presets, concurrency, watch, CI, and JSON output
 
-Normalized use cases: [Parameterization](parameterization.md) (passthrough · overrides · variants).
+Normalized use cases: [Parameterization](parameterization.md) (passthrough · overrides · presets).
 
-- [ ] **Structured passthrough** — Declare passthrough target per step; named channels.
-- [ ] **Target variant block** — Define named variants on a target (e.g. `bake test` vs `bake test cover`); codified in Bakefile, no separate target. See [Parameterization](parameterization.md).
-- [ ] **Concurrency controls** — Per-task pools, `--max-parallel`, mutex for shared resources.
-- [ ] **CI ergonomics** — Timing breakdown, artifact summaries.
-- [ ] **Watch mode** — `bake --watch <target>`: re-run target (and deps as needed) when inputs change; dev ergonomics, local-first.
-- [ ] **Machine-readable output** — `--json` event stream.
+- [x] **Structured passthrough** — Declare passthrough per step; named channels; split args by `--`.
+- [x] **Target preset block** — Define named presets on a target (e.g. `bake test` vs `bake test cover`); codified in Bakefile. See [Parameterization](parameterization.md).
+- [x] **Concurrency controls** — Per-task pools, `--max-parallel`, mutex for shared resources.
+- [x] **CI ergonomics** — Timing breakdown (`--timing`), artifact summaries (`--artifacts`).
+- [x] **Watch mode** — `bake --watch <target>`: re-run target when inputs change (poll-based).
+- [x] **Machine-readable output** — `--json` event stream (NDJSON).
+- [x] **Bake linter** — `bake lint` with rules (prefer-exec, brackets-only, require-desc), `--fix`, config via `.bake-lint` or `.bake-lint.yaml`. See [Lint](lint.md).
+- [x] **Precommit and install-hooks** — Define **`suite precommit { ... }`**; **`bake install hooks`** writes `.git/hooks/pre-commit` to run **`bake precommit`** (optional; only when that suite is present). Auto format and lint on load (unless `BAKE_NO_AUTOFORMAT` / `BAKE_NO_AUTOLINT`); lint applies fixes and surfaces only unfixable errors.
+- [x] **Default suite ci** — **`suite ci`** is the conventional default for CI: **`--ci`** / **`CI=1`** and **`bake ci`** use it. Define **`suite ci { build lint test }`** and run **`bake ci`** in your CI config. Possible future: **`bake install ci`** to emit a minimal CI workflow snippet that runs **`bake ci`** (see backlog).
 
 ## v1.5 — Containerization support
 
@@ -76,6 +79,7 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 
 ## Later / backlog
 
+- **bake install ci** — Emit a minimal CI workflow (e.g. GitHub Actions) that runs **`bake ci`**, so new repos can run **`bake install ci`** and paste the snippet into their CI config.
 - **Plugin system** — Pushed down the roadmap; not in scope for early v1.x. We avoid design decisions that would preclude a plugin system later.
 - **Remote cache / artifacts** — Content-hash cache, optional remote.
 - **Make → Bake conversion** — Script or mapping guide.
@@ -88,6 +92,7 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 - **Filter by scope** — Run only targets matching a path or tag (e.g. “targets touching `./app/`” or tag `frontend`); ad-hoc slice for large repos.
 - **List with deps** — `--list --deps` (or similar): show each target’s deps next to it in the list.
 - **when os / when arch** — Platform conditionals (e.g. `when os linux`, `when arch amd64`) in addition to `when env` / `when cmd`.
+- **Composable variants** — Allow combining multiple named modifiers on a single target invocation (e.g. `bake test cover race`), unlike presets which select exactly one named configuration. Presets are static and mutually exclusive; composable variants would layer on top of each other.
 
 --
 

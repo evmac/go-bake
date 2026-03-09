@@ -24,6 +24,8 @@ When adding a feature (e.g. a new flag or DSL construct), add:
 - **Roadmap / scope:** [docs/future.md](docs/future.md)
 - **Bakefile syntax:** [docs/bakefile-reference.md](docs/bakefile-reference.md), [docs/grammar-spec.md](docs/grammar-spec.md), [docs/llm-reference.md](docs/llm-reference.md)
 - **CLI:** [docs/cli-reference.md](docs/cli-reference.md)
-- **Parameterization (passthrough, overrides, variants):** [docs/parameterization.md](docs/parameterization.md)
+- **Parameterization (passthrough, overrides, presets):** [docs/parameterization.md](docs/parameterization.md)
+- **Linting:** [docs/lint.md](docs/lint.md)
+- **Releasing:** [docs/releasing.md](docs/releasing.md) — ship-it praxis (review → commit → tag → push → `gh release create`). No release script; follow the doc. Agents should not create or push tags/releases unless explicitly asked.
 
 Tests live in `*_test.go` next to the code; CLI behaviour in `cmd/bake/main_test.go`. Use `t.TempDir()` for scratch dirs; avoid committing generated or temporary files.

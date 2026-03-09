@@ -36,20 +36,30 @@ profile prod {
 
 target deploy {
   deps build
-  exec ["deploy.sh", "{{.env}}", "{{.dry_run}}"]
+  steps { exec ["deploy.sh", "{{.env}}", "{{.dry_run}}"] }
 }
 
 target build {
   desc "build the binary"
-  exec ["go", "build", "-o", "bin/app", "./cmd/app"]
+  steps { exec ["go", "build", "-o", "bin/app", "./cmd/app"] }
+}
+
+target format {
+  desc "format code (e.g. go fmt)"
+  steps { exec ["go", "fmt", "./..."] }
 }
 
 target test {
   deps build
-  exec ["go", "test", "./..."]
+  steps { exec ["go", "test", "./..."] }
 }
 
-suite local { build format test }
+target lint {
+  desc "lint Bakefile"
+  steps { exec ["bake", "lint"] }
+}
+
+suite local { build format lint test }
 suite ci { build test }
 ```
 
@@ -59,7 +69,9 @@ Then:
 - `bake build` — run the `build` target
 - `bake test` — run `build` then `test`
 - `bake ci` — run the ci suite (build, test)
-- `bake install` — create `.bake/bin` shims so you can run `build` / `test` from PATH
+- `bake lint` — lint the Bakefile (optional `--fix`); see [Lint](docs/lint.md)
+- `bake --watch build` — re-run `build` when inputs change
+- `bake install` — install all components (create minimal Bakefile if none; install shims and hooks). Use **`bake install shims`** for shims only, **`bake install hooks`** for the pre-commit hook only. See [Installing shims](docs/install-shims.md) and [Installing git hooks](docs/install-hooks.md).
 
 ## CI
 
@@ -78,6 +90,13 @@ The project’s [.actrc](.actrc) pins the runner image so Go and the workflow ru
 - [Getting started](docs/getting-started.md)
 - [Bakefile reference](docs/bakefile-reference.md)
 - [CLI reference](docs/cli-reference.md)
+- [Parameterization (passthrough, overrides, presets)](docs/parameterization.md)
+- [Installing shims](docs/install-shims.md)
+- [Installing git hooks](docs/install-hooks.md)
+- [Lint](docs/lint.md)
+- [Testing and coverage](docs/testing-and-coverage.md)
 - [Grammar spec](docs/grammar-spec.md)
 - [LLM reference](docs/llm-reference.md)
+- [Homebrew](docs/homebrew.md)
 - [Future roadmap](docs/future.md)
+- [Releasing](docs/releasing.md)

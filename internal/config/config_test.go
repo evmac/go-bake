@@ -69,3 +69,21 @@ func TestFindBakefile(t *testing.T) {
 		t.Errorf("from subdir: got root=%q path=%q", root2, path2)
 	}
 }
+
+func TestPresetByName(t *testing.T) {
+	tgt := &Target{
+		Presets: []Preset{
+			{Name: "cover", Argv: []string{"-cover"}},
+			{Name: "race", Env: map[string]string{"RACE": "1"}},
+		},
+	}
+	if v := tgt.PresetByName("cover"); v == nil || v.Name != "cover" || len(v.Argv) != 1 {
+		t.Errorf("PresetByName(cover): got %+v", v)
+	}
+	if v := tgt.PresetByName("race"); v == nil || v.Name != "race" || v.Env["RACE"] != "1" {
+		t.Errorf("PresetByName(race): got %+v", v)
+	}
+	if v := tgt.PresetByName("missing"); v != nil {
+		t.Errorf("PresetByName(missing): expected nil, got %+v", v)
+	}
+}

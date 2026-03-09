@@ -456,6 +456,28 @@ target hidden {
 	}
 }
 
+func TestParseAndCompileSuitePrecommit(t *testing.T) {
+	// suite precommit is a normal suite; when present, install hooks runs "bake precommit"
+	src := `target lint { steps { exec ["true"] } }
+target build { steps { exec ["true"] } }
+suite precommit { lint build }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	su := cfg.SuiteByName("precommit")
+	if su == nil {
+		t.Fatal("suite precommit should exist")
+	}
+	if len(su.Targets) != 2 || su.Targets[0] != "lint" || su.Targets[1] != "build" {
+		t.Errorf("suite precommit targets: got %v", su.Targets)
+	}
+}
+
 func TestParseAndCompileFormatParseError(t *testing.T) {
 	// ParseAndCompile with parse error includes file:line:col when available (formatParseError)
 	_, err := ParseAndCompile(filepath.Join(t.TempDir(), "missing.bake"))
@@ -558,6 +580,95 @@ func TestParseTargetWithPassthrough(t *testing.T) {
 	tgt := cfg.TargetByName("t")
 	if tgt == nil || tgt.PassthroughStep != 1 {
 		t.Errorf("PassthroughStep: got %+v", tgt)
+	}
+	// Optional name: passthrough step = 2 name "extra"
+	src2 := `target u { passthrough step = 2 name "extra" steps { exec ["true"] exec ["echo"] } }`
+	ast2, err := Parser.ParseString("", src2)
+	if err != nil {
+		t.Fatalf("parse passthrough with name: %v", err)
+	}
+	cfg2, err := Compile(ast2)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt2 := cfg2.TargetByName("u")
+	if tgt2 == nil || len(tgt2.Passthrough) != 1 || tgt2.Passthrough[0].Step != 2 || tgt2.Passthrough[0].Name != "extra" {
+		t.Errorf("Passthrough with name: got %+v", tgt2)
+	}
+}
+
+func TestParseTargetWithPreset(t *testing.T) {
+	src := `target test { steps { exec ["go", "test", "./..."] } preset cover { argv ["-coverprofile=coverage.out"] } preset race { env { RACE "1" } } }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("test")
+	if tgt == nil || len(tgt.Presets) != 2 {
+		t.Fatalf("expected 2 presets, got %+v", tgt)
+	}
+	cover := tgt.PresetByName("cover")
+	if cover == nil || len(cover.Argv) != 1 || cover.Argv[0] != "-coverprofile=coverage.out" {
+		t.Errorf("preset cover: got %+v", cover)
+	}
+	race := tgt.PresetByName("race")
+	if race == nil || len(race.Env) != 1 || race.Env["RACE"] != "1" {
+		t.Errorf("preset race: got %+v", race)
+	}
+}
+
+func TestParsePresetWithDescAndSteps(t *testing.T) {
+	src := `target test {
+  steps { exec ["go", "test", "./..."] }
+  preset cover {
+    desc "run tests with coverage"
+    steps { exec ["go", "test", "./...", "-coverprofile=coverage.out"] }
+  }
+}`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("test")
+	if tgt == nil || len(tgt.Presets) != 1 {
+		t.Fatalf("expected 1 preset, got %+v", tgt)
+	}
+	cover := tgt.PresetByName("cover")
+	if cover == nil {
+		t.Fatal("preset cover missing")
+	}
+	if cover.Desc != "run tests with coverage" {
+		t.Errorf("preset cover desc: got %q", cover.Desc)
+	}
+	if len(cover.Steps) != 1 || len(cover.Steps[0].Argv) < 4 || cover.Steps[0].Argv[3] != "-coverprofile=coverage.out" {
+		t.Errorf("preset cover steps: got %+v", cover.Steps)
+	}
+}
+
+func TestParseSuiteWithPresetEntry(t *testing.T) {
+	src := `suite ci { build test test.cover }`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg.Suites) != 1 {
+		t.Fatalf("expected 1 suite, got %d", len(cfg.Suites))
+	}
+	su := cfg.Suites[0]
+	if len(su.Targets) != 3 || su.Targets[0] != "build" || su.Targets[1] != "test" || su.Targets[2] != "test cover" {
+		t.Errorf("suite targets: got %v", su.Targets)
 	}
 }
 

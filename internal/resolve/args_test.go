@@ -12,8 +12,9 @@ func TestParseArgs(t *testing.T) {
 			{Name: "env", Type: "string", Short: "e", Default: "staging"},
 			{Name: "dry_run", Type: "bool", Default: "false"},
 		},
+		PassthroughStep: 1,
 	}
-	declared, live, pass, err := ParseArgs(tgt, []string{"--env", "prod", "--port", "8080", "--", "-v"})
+	declared, live, passByStep, err := ParseArgs(tgt, []string{"--env", "prod", "--port", "8080", "--", "-v"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,6 +24,7 @@ func TestParseArgs(t *testing.T) {
 	if live["port"] != "8080" {
 		t.Errorf("live: %v", live)
 	}
+	pass := passByStep[1]
 	if len(pass) != 1 || pass[0] != "-v" {
 		t.Errorf("passthrough: %v", pass)
 	}
@@ -106,5 +108,21 @@ func TestParseArgsBareDoubleDashFlag(t *testing.T) {
 	}
 	if declared["v"] != "true" {
 		t.Errorf("bare --v should set true: %v", declared)
+	}
+}
+
+func TestParseArgsMultiSlotPassthrough(t *testing.T) {
+	tgt := &config.Target{
+		Passthrough: []config.PassthroughSlot{{Step: 1}, {Step: 2}},
+	}
+	_, _, passByStep, err := ParseArgs(tgt, []string{"--", "a", "b", "--", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(passByStep[1]) != 2 || passByStep[1][0] != "a" || passByStep[1][1] != "b" {
+		t.Errorf("slot 1: got %v", passByStep[1])
+	}
+	if len(passByStep[2]) != 1 || passByStep[2][0] != "c" {
+		t.Errorf("slot 2: got %v", passByStep[2])
 	}
 }
