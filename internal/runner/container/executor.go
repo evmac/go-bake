@@ -79,6 +79,124 @@ type DockerBackend interface {
 	ExecInspect(ctx context.Context, execID string, opts client.ExecInspectOptions) (client.ExecInspectResult, error)
 }
 
+// DaemonContainerOptions holds parameters for starting a long-running daemon in a container (no exec; container Cmd runs the process).
+type DaemonContainerOptions struct {
+	Image      string
+	RootDir    string
+	TargetCwd  string
+	Networks   []string
+	Volumes    []config.VolumeRef
+	Registry   NetVolRegistry
+	Cmd        []string
+	Env        map[string]string
+	WorkingDir string // path inside container (e.g. /workspace or /workspace/subdir)
+	Backend    DockerBackend
+}
+
+// StartDaemonContainer creates and starts a container with the given Cmd as the main process (detached). Returns container ID.
+// Caller is responsible for stopping/removing the container (e.g. via StopContainer). AutoRemove is not used so the container persists.
+func StartDaemonContainer(ctx context.Context, opts DaemonContainerOptions) (containerID string, err error) {
+	if len(opts.Cmd) == 0 {
+		return "", fmt.Errorf("daemon container: Cmd is required")
+	}
+	var backend DockerBackend
+	var cli *client.Client
+	if opts.Backend != nil {
+		backend = opts.Backend
+	} else {
+		var err error
+		cli, err = client.NewClientWithOpts(ClientOpts()...)
+		if err != nil {
+			return "", fmt.Errorf("Docker required for daemon with image %q: %w", opts.Image, err)
+		}
+		defer cli.Close()
+		backend = &backendAdapter{Client: cli}
+		if opts.Registry == nil {
+			opts.Registry = NewDockerNetVolRegistry(cli)
+		}
+	}
+	if err := maybePullImage(ctx, backend, opts.Image); err != nil {
+		return "", err
+	}
+	networkMode := ""
+	if len(opts.Networks) > 0 {
+		netName, err := opts.Registry.EnsureNetwork(ctx, opts.Networks[0])
+		if err != nil {
+			return "", fmt.Errorf("ensure network %q: %w", opts.Networks[0], err)
+		}
+		networkMode = netName
+	}
+	var mounts []mount.Mount
+	rootAbs, err := filepath.Abs(opts.RootDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve root dir: %w", err)
+	}
+	mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: rootAbs, Target: workspaceMountPath})
+	for _, ref := range opts.Volumes {
+		src, tgt, err := opts.Registry.EnsureVolume(ctx, ref, opts.RootDir)
+		if err != nil {
+			return "", fmt.Errorf("ensure volume %q: %w", ref.Name, err)
+		}
+		if ref.HostPath != "" {
+			mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: src, Target: tgt})
+		} else {
+			mounts = append(mounts, mount.Mount{Type: mount.TypeVolume, Source: src, Target: tgt})
+		}
+	}
+	hostConfig := &container.HostConfig{
+		Mounts:      mounts,
+		NetworkMode: container.NetworkMode(networkMode),
+		AutoRemove:  false,
+	}
+	cfg := &container.Config{
+		Image:      opts.Image,
+		Cmd:        opts.Cmd,
+		WorkingDir: opts.WorkingDir,
+		Env:        envMapToSlice(opts.Env),
+		Tty:        false,
+		OpenStdin:  false,
+	}
+	resp, err := backend.ContainerCreate(ctx, client.ContainerCreateOptions{Config: cfg, HostConfig: hostConfig})
+	if err != nil {
+		return "", fmt.Errorf("create daemon container: %w", err)
+	}
+	id := resp.ID
+	var extraNetworks []string
+	if len(opts.Networks) > 1 {
+		extraNetworks = opts.Networks[1:]
+	}
+	for _, netName := range extraNetworks {
+		netID, err := opts.Registry.EnsureNetwork(ctx, netName)
+		if err != nil {
+			_, _ = backend.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{Force: true})
+			return "", fmt.Errorf("ensure network %q: %w", netName, err)
+		}
+		if _, err := backend.NetworkConnect(ctx, netID, client.NetworkConnectOptions{Container: id}); err != nil {
+			_, _ = backend.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{Force: true})
+			return "", fmt.Errorf("connect network %q: %w", netName, err)
+		}
+	}
+	if _, err := backend.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		_, _ = backend.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{Force: true})
+		return "", fmt.Errorf("start daemon container: %w", err)
+	}
+	return id, nil
+}
+
+// StopContainer stops and removes a container (e.g. a daemon started with StartDaemonContainer). Safe to call if already removed.
+func StopContainer(ctx context.Context, containerID string, backend DockerBackend) error {
+	if backend == nil {
+		cli, err := client.NewClientWithOpts(ClientOpts()...)
+		if err != nil {
+			return fmt.Errorf("Docker client: %w", err)
+		}
+		defer cli.Close()
+		backend = &backendAdapter{Client: cli}
+	}
+	_, err := backend.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
+	return err
+}
+
 // Run runs all steps in a container: create container with image, mount rootDir at /workspace, attach networks/volumes, exec each step.
 func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Stdout == nil {
@@ -91,7 +209,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	if opts.Backend != nil {
 		backend = opts.Backend
 	} else {
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		cli, err := client.NewClientWithOpts(ClientOpts()...)
 		if err != nil {
 			return fmt.Errorf("Docker is required for target with image %q: %w", opts.Image, err)
 		}

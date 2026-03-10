@@ -51,7 +51,7 @@ type RunOptions struct {
 	Mutexes           *sync.Map                                   // optional: name -> *sync.Mutex (mutex per name)
 	TimingReporter    func(target string, duration time.Duration) // optional: called when a target finishes (for --timing)
 	ArtifactReporter  func(target string, paths []string)         // optional: called with output paths after a target runs (for --artifacts)
-	NetVolRegistry container.NetVolRegistry // optional: for containerized targets (image); first reference creates net/vol
+	NetVolRegistry    container.NetVolRegistry                    // optional: for containerized targets (image); first reference creates net/vol
 }
 
 func emitEvent(w io.Writer, e RunEvent) {

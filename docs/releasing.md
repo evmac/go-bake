@@ -64,7 +64,7 @@ Use **`bake install hooks`** to install a git pre-commit hook that runs **`bake 
 Before you consider a release done, make sure you've **actively completed each step** below:
 
 - [ ] Run `bake precommit` and ensure all checks pass (formatting, lint, unit/integration tests).
-- [ ] Bump the version in the appropriate places (e.g., CLI output, core code, and `docs/future.md`).
+- [ ] Version: the binary reports it via **`bake --version`**. For release builds, set it at build time with `-ldflags "-X main.Version=v1.x.0"` (e.g. when building release binaries or in the Homebrew formula). No need to edit source each release.
 - [ ] Double-check that your git tag (e.g., `v1.4.0`) matches the release version.
 - [ ] Push both the branch and the tag to GitHub to trigger the release workflow. Ensure the GitHub Actions workflow (`release: published`) runs and the Homebrew tap is updated automatically.
 

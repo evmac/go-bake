@@ -737,3 +737,73 @@ func TestValidationErrListError(t *testing.T) {
 		t.Errorf("Error() should join messages: %q", s)
 	}
 }
+
+func TestParseTargetUpWithWorkflowAndDaemon(t *testing.T) {
+	src := `target build { steps { exec ["go", "build"] } }
+target up {
+  workflow { build redis }
+  daemon redis { steps { exec ["redis-server"] } }
+}
+`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("up")
+	if tgt == nil || len(tgt.Workflow) != 2 || tgt.Workflow[0] != "build" || tgt.Workflow[1] != "redis" {
+		t.Fatalf("target up workflow: got %+v", tgt)
+	}
+	if len(tgt.Daemons) != 1 || tgt.Daemons[0].Name != "redis" {
+		t.Fatalf("target up daemons: got %+v", tgt.Daemons)
+	}
+	if len(tgt.Daemons[0].Steps) != 1 || len(tgt.Daemons[0].Steps[0].Argv) != 1 || tgt.Daemons[0].Steps[0].Argv[0] != "redis-server" {
+		t.Errorf("daemon redis steps: got %+v", tgt.Daemons[0].Steps)
+	}
+}
+
+func TestParseWorkflowWithSchedule(t *testing.T) {
+	src := `target build { steps { exec ["true"] } }
+target up {
+  workflow { build schedule interval "1h" }
+}
+`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("up")
+	if tgt == nil || len(tgt.Workflow) != 1 || tgt.Workflow[0] != "build" {
+		t.Fatalf("workflow names: got %+v", tgt)
+	}
+	if tgt.WorkflowSchedule == nil || tgt.WorkflowSchedule.Interval != "1h" {
+		t.Fatalf("WorkflowSchedule: got %+v", tgt.WorkflowSchedule)
+	}
+}
+
+func TestParseWorkflowWithScheduleCron(t *testing.T) {
+	src := `target build { steps { exec ["true"] } }
+target up {
+  workflow { build schedule cron "0 * * * *" }
+}
+`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tgt := cfg.TargetByName("up")
+	if tgt == nil || tgt.WorkflowSchedule == nil || tgt.WorkflowSchedule.Cron != "0 * * * *" {
+		t.Fatalf("WorkflowSchedule.Cron: got %+v", tgt.WorkflowSchedule)
+	}
+}

@@ -18,6 +18,20 @@ type File struct {
 	BakePath string // path to Bakefile
 }
 
+// Daemon is a long-running unit (steps, env, cwd, image, networks, volumes); schedule in workflow, lifecycle in state.
+type Daemon struct {
+	Name     string
+	Steps    []Step
+	Env      map[string]string
+	Cwd      string
+	Image    string
+	Unsafe   bool
+	Networks []string
+	Volumes  []VolumeRef
+	Line     int
+	Column   int
+}
+
 // Profile is a named overlay of dotenv files and env vars (activated by --profile or BAKE_PROFILE).
 type Profile struct {
 	Name   string
@@ -83,6 +97,18 @@ func (f *File) ProfileByName(name string) *Profile {
 	for _, p := range f.Profiles {
 		if p.Name == name {
 			return p
+		}
+	}
+	return nil
+}
+
+// DaemonByName returns the daemon with the given name from any target's Daemons (e.g. target up), or nil.
+func (f *File) DaemonByName(name string) *Daemon {
+	for _, t := range f.Targets {
+		for _, d := range t.Daemons {
+			if d != nil && d.Name == name {
+				return d
+			}
 		}
 	}
 	return nil

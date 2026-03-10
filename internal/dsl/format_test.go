@@ -507,6 +507,49 @@ func mustParseTarget(t *testing.T, src string) *TargetBlock {
 	return ast.Entries[0].Target
 }
 
+func TestFormatWorkflowWithSchedule(t *testing.T) {
+	// Format workflow with schedule (cron and interval) for coverage.
+	ast := &Bakefile{Entries: []*FileEntry{{
+		Target: &TargetBlock{
+			Name: "up",
+			Body: &TargetBody{Entries: []*BodyEntry{
+				{Workflow: &WorkflowClause{Entries: []*WorkflowEntry{
+					{Ident: "build"},
+					{Schedule: &ScheduleClause{Interval: &QuotedString{Value: "1h"}}},
+				}}},
+				{Steps: &StepsBlock{Steps: []*Step{{Exec: &ExecStep{Argv: []ExecElem{NewExecElem("true")}}}}}},
+			}},
+		},
+	}}}
+	var buf bytes.Buffer
+	if err := Format(ast, &buf); err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "workflow") || !strings.Contains(out, "schedule") || !strings.Contains(out, "interval") || !strings.Contains(out, "1h") {
+		t.Errorf("format should include workflow schedule: %s", out)
+	}
+	// Cron
+	ast2 := &Bakefile{Entries: []*FileEntry{{
+		Target: &TargetBlock{
+			Name: "up",
+			Body: &TargetBody{Entries: []*BodyEntry{
+				{Workflow: &WorkflowClause{Entries: []*WorkflowEntry{
+					{Ident: "build"},
+					{Schedule: &ScheduleClause{Cron: &QuotedString{Value: "0 * * * *"}}},
+				}}},
+			}},
+		},
+	}}}
+	buf.Reset()
+	if err := Format(ast2, &buf); err != nil {
+		t.Fatalf("format cron: %v", err)
+	}
+	if !strings.Contains(buf.String(), "cron") || !strings.Contains(buf.String(), "0 * * * *") {
+		t.Errorf("format should include schedule cron: %s", buf.String())
+	}
+}
+
 func TestFormatTargetWithTags(t *testing.T) {
 	ast := &Bakefile{Entries: []*FileEntry{{
 		Target: &TargetBlock{

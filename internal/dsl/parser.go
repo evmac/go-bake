@@ -76,13 +76,16 @@ func Compile(ast *Bakefile) (*config.File, error) {
 				if ent == nil {
 					continue
 				}
-				targets = append(targets, ent.Raw())
+				if ref := ent.Raw(); ref != "" {
+					targets = append(targets, ref)
+				}
 			}
 			su := &config.Suite{Name: e.Suite.Name, Targets: targets}
 			if e.Suite.Pos.Line > 0 {
 				su.Line, su.Column = e.Suite.Pos.Line, e.Suite.Pos.Column
 			}
 			out.Suites = append(out.Suites, su)
+			continue
 		}
 	}
 	return out, nil
@@ -251,6 +254,36 @@ func compileTarget(t *TargetBlock, filePrivate bool) (*config.Target, error) {
 				}
 				tgt.Volumes = append(tgt.Volumes, ref)
 			}
+			if e.Workflow != nil {
+				for _, entry := range e.Workflow.Entries {
+					if entry == nil {
+						continue
+					}
+					if entry.Ident != "" {
+						tgt.Workflow = append(tgt.Workflow, entry.Ident)
+					}
+					if entry.Schedule != nil {
+						sched := &config.WorkflowSchedule{}
+						if entry.Schedule.Cron != nil {
+							sched.Cron = entry.Schedule.Cron.Value
+						}
+						if entry.Schedule.Interval != nil {
+							sched.Interval = entry.Schedule.Interval.Value
+						}
+						tgt.WorkflowSchedule = sched
+					}
+				}
+			}
+			if e.Daemon != nil {
+				d, err := compileDaemon(e.Daemon)
+				if err != nil {
+					return nil, err
+				}
+				if e.Daemon.Pos.Line > 0 {
+					d.Line, d.Column = e.Daemon.Pos.Line, e.Daemon.Pos.Column
+				}
+				tgt.Daemons = append(tgt.Daemons, d)
+			}
 		}
 	}
 	if len(t.CmdTok) > 0 {
@@ -258,6 +291,63 @@ func compileTarget(t *TargetBlock, filePrivate bool) (*config.Target, error) {
 		tgt.Steps = append(tgt.Steps, config.Step{Argv: t.CmdTok})
 	}
 	return tgt, nil
+}
+
+func compileDaemon(d *DaemonBlock) (*config.Daemon, error) {
+	out := &config.Daemon{Name: d.Name, Env: make(map[string]string)}
+	if d.Body == nil {
+		return out, nil
+	}
+	for _, e := range d.Body.Entries {
+		if e == nil {
+			continue
+		}
+		if e.Steps != nil {
+			for _, s := range e.Steps.Steps {
+				step, err := compileStep(s)
+				if err != nil {
+					return nil, err
+				}
+				out.Steps = append(out.Steps, step)
+			}
+		}
+		if e.Step != nil {
+			step, err := compileStep(e.Step)
+			if err != nil {
+				return nil, err
+			}
+			out.Steps = append(out.Steps, step)
+		}
+		if e.Env != nil {
+			for _, p := range e.Env.Pairs {
+				out.Env[p.Key] = string(p.Value)
+			}
+		}
+		if e.Cwd != nil {
+			out.Cwd = e.Cwd.Path
+		}
+		if e.Image != nil {
+			if e.Image.Ident != nil {
+				out.Image = *e.Image.Ident
+			} else {
+				out.Image = e.Image.String.Value
+			}
+		}
+		if e.Unsafe != nil {
+			out.Unsafe = true
+		}
+		if e.Net != nil {
+			out.Networks = append(out.Networks, e.Net.Name)
+		}
+		if e.Vol != nil {
+			ref := config.VolumeRef{Name: e.Vol.Name}
+			if e.Vol.HostPath != nil {
+				ref.HostPath = e.Vol.HostPath.Value
+			}
+			out.Volumes = append(out.Volumes, ref)
+		}
+	}
+	return out, nil
 }
 
 func compileStep(s *Step) (config.Step, error) {

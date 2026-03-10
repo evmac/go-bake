@@ -29,6 +29,7 @@ bake [global-flags] [target [preset] | suite] [target-args] [--] [passthrough]
 | `-w` | Write result to file instead of stdout (only for `format` / `fmt`). |
 | `--check` | Exit 1 if Bakefile would be changed (only for `format` / `fmt`); use in CI to enforce formatting. |
 | `--watch` | Re-run target when inputs change (poll-based); requires a target name. |
+| `--version` | Print version and exit. |
 | `--debug` | Enable debug logging (or set `BAKE_DEBUG=1`). |
 
 ## Environment (load-time)
@@ -43,6 +44,7 @@ bake [global-flags] [target [preset] | suite] [target-args] [--] [passthrough]
 | Variable | Effect |
 |----------|--------|
 | `BAKE_PULL` | When a target has **image** and runs in Docker: `always`, `never`, or `if-not-present` (default). |
+| `BAKE_RUNTIME` | Container runtime: `docker` (default), `podman`, `containerd`, or `crio`. Podman uses default socket when `DOCKER_HOST` unset. |
 
 ## Commands
 
@@ -55,6 +57,9 @@ bake [global-flags] [target [preset] | suite] [target-args] [--] [passthrough]
 - **bake install** — install all components: if no Bakefile exists, create a minimal one (in repo root if in a git repo, else current dir); then install shims and hooks. Use **`bake install shims`** to only create `.bake/bin` shims; **`bake install hooks`** to only write `.git/hooks/pre-commit` (requires a Bakefile and a git repo). Add `.bake/bin` to PATH to run targets without the `bake` prefix.
 - **bake install shims** — create `.bake/bin` with a shim for each target and suite (requires a Bakefile).
 - **bake install hooks** — write `.git/hooks/pre-commit` to run **`bake precommit`** (requires a Bakefile that defines **`suite precommit { ... }`** and a git repo). See [Installing git hooks](install-hooks.md).
+- **bake up** — Run the **target named `up`** (if defined): execute its **workflow** (targets in order with deps, then start each daemon defined in that target). State is written to `.bake/state.json`.
+- **bake down** — Stop all daemons recorded in `.bake/state.json` (from a previous **`bake up`**).
+- **bake down** *daemon* — Stop only the named daemon.
 
 ## Target args
 

@@ -5,17 +5,19 @@ import (
 	"context"
 	"io"
 
+	"github.com/evmac/go-bake/internal/config"
 	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 )
 
 // fakeBackend implements DockerBackend for tests without a Docker daemon.
 type fakeBackend struct {
-	imageInspectErr error
-	imagePullErr    error
-	containerID     string
-	execID          string
-	exitCode        int
+	imageInspectErr   error
+	imagePullErr      error
+	containerStartErr error
+	containerID       string
+	execID            string
+	exitCode          int
 }
 
 func (f *fakeBackend) ImageInspect(ctx context.Context, image string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
@@ -42,6 +44,9 @@ func (f *fakeBackend) ContainerRemove(ctx context.Context, containerID string, o
 }
 
 func (f *fakeBackend) ContainerStart(ctx context.Context, containerID string, opts client.ContainerStartOptions) (client.ContainerStartResult, error) {
+	if f.containerStartErr != nil {
+		return client.ContainerStartResult{}, f.containerStartErr
+	}
 	return client.ContainerStartResult{}, nil
 }
 
@@ -72,7 +77,7 @@ type fakePullResponse struct {
 }
 
 func (f *fakePullResponse) Read(p []byte) (n int, err error) { return 0, io.EOF }
-func (f *fakePullResponse) Close() error                    { return nil }
+func (f *fakePullResponse) Close() error                     { return nil }
 func (f *fakePullResponse) Wait(ctx context.Context) error   { return nil }
 
 type fakeAttachStream struct {
@@ -107,4 +112,28 @@ func (f *fakeNetVolClient) VolumeCreate(ctx context.Context, options client.Volu
 	return client.VolumeCreateResult{
 		Volume: volume.Volume{Name: options.Name, Driver: "local", Labels: map[string]string{}, Mountpoint: "/var/lib/docker/volumes/" + options.Name, Options: map[string]string{}},
 	}, nil
+}
+
+// NewFakeBackend returns a DockerBackend for tests (no real Docker). Used by other packages (e.g. lifecycle).
+func NewFakeBackend() DockerBackend {
+	return &fakeBackend{}
+}
+
+// fakeNetVolRegistry implements NetVolRegistry for tests.
+type fakeNetVolRegistry struct{}
+
+func (f *fakeNetVolRegistry) EnsureNetwork(ctx context.Context, name string) (string, error) {
+	return "fake-net-" + name, nil
+}
+
+func (f *fakeNetVolRegistry) EnsureVolume(ctx context.Context, ref config.VolumeRef, rootDir string) (string, string, error) {
+	if ref.HostPath != "" {
+		return ref.HostPath, "/mnt/" + ref.Name, nil
+	}
+	return "fake-vol-" + ref.Name, "/mnt/" + ref.Name, nil
+}
+
+// NewFakeNetVolRegistry returns a NetVolRegistry for tests. Used by other packages (e.g. lifecycle).
+func NewFakeNetVolRegistry() NetVolRegistry {
+	return &fakeNetVolRegistry{}
 }

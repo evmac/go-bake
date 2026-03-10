@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -20,10 +21,15 @@ import (
 	"github.com/evmac/go-bake/internal/config"
 	"github.com/evmac/go-bake/internal/dsl"
 	"github.com/evmac/go-bake/internal/env"
+	"github.com/evmac/go-bake/internal/lifecycle"
 	"github.com/evmac/go-bake/internal/lint"
 	"github.com/evmac/go-bake/internal/resolve"
 	"github.com/evmac/go-bake/internal/runner"
+	"github.com/robfig/cron/v3"
 )
+
+// Version is set at build time via -ldflags "-X main.Version=...". Default "dev" for local builds.
+var Version = "dev"
 
 // setFlags collects repeated --set "key=value" (env.VAR=val or args.NAME=val).
 type setFlags []string
@@ -93,10 +99,15 @@ func RunMain(args []string) (int, error) {
 	artifacts := fs.Bool("artifacts", false, "Print output paths of targets that produced artifacts")
 	watch := fs.Bool("watch", false, "Re-run target when inputs change (poll-based)")
 	debug := fs.Bool("debug", false, "Enable debug logging (or set BAKE_DEBUG=1)")
+	showVersion := fs.Bool("version", false, "Print version and exit")
 	var setVals setFlags
 	fs.Var(&setVals, "set", "Override env or args: --set env.FOO=bar or --set args.NAME=value (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return 2, err
+	}
+	if *showVersion {
+		fmt.Println(Version)
+		return 0, nil
 	}
 	cliEnv, cliArgs := parseSetFlags(setVals)
 	if *profileName == "" {
@@ -217,6 +228,22 @@ func RunMain(args []string) (int, error) {
 		}
 		if err := runInstall(); err != nil {
 			return 2, err
+		}
+		return 0, nil
+	}
+	if target == "up" {
+		if err := runUp(nil, cliEnv, *profileName, *showCmd); err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
+	if target == "down" {
+		daemonName := ""
+		if len(posArgs) > 1 {
+			daemonName = posArgs[1]
+		}
+		if err := runDown(daemonName); err != nil {
+			return 1, err
 		}
 		return 0, nil
 	}
@@ -481,6 +508,211 @@ func runDefault(cliEnv, cliArgs map[string]string, profileName string, showCmd, 
 		declared[k] = v
 	}
 	return runTarget(cfg, name, tgt, declared, live, nil, cliEnv, profile, nil, showCmd, jsonMode, maxParallel, timing, artifacts)
+}
+
+// runUp runs the "up" target workflow (targets + daemons). If workflow has a schedule, re-runs workflow targets until ctx is done (or SIGINT when ctx is nil).
+func runUp(ctx context.Context, cliEnv map[string]string, profileName string, showCmd bool) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	tgt := cfg.TargetByName("up")
+	if tgt == nil {
+		return fmt.Errorf("no target \"up\" defined (add 'target up { workflow { ... }; daemon name { ... } }' for 'bake up')")
+	}
+	if len(tgt.Workflow) == 0 {
+		return fmt.Errorf("target \"up\" has no workflow (add workflow { target1 daemon1 ... } inside target up)")
+	}
+	rootDir := cfg.RootDir
+	dotenvMap, err := env.LoadDotenv(rootDir, cfg.Dotenv)
+	if err != nil {
+		return err
+	}
+	var profile *config.Profile
+	if profileName != "" {
+		profile = cfg.ProfileByName(profileName)
+		if profile == nil {
+			return fmt.Errorf("unknown profile %q", profileName)
+		}
+	}
+	opts := runner.RunOptions{
+		RootDir:     rootDir,
+		Dotenv:      cfg.Dotenv,
+		CLIEnv:      cliEnv,
+		ShowCmd:     showCmd,
+		MaxParallel: 1,
+	}
+	if profile != nil {
+		opts.TargetEnv = profile.Env
+	}
+	daemonByName := func(name string) *config.Daemon {
+		for _, d := range tgt.Daemons {
+			if d != nil && d.Name == name {
+				return d
+			}
+		}
+		return nil
+	}
+	for _, name := range tgt.Workflow {
+		if runTgt := cfg.TargetByName(name); runTgt != nil {
+			opts.TargetEnv = runTgt.Env
+			if profile != nil {
+				opts.TargetEnv = mergeEnv(profile.Env, runTgt.Env)
+			}
+			if err := runner.Run(context.Background(), cfg, name, opts); err != nil {
+				return fmt.Errorf("workflow target %q: %w", name, err)
+			}
+			continue
+		}
+		d := daemonByName(name)
+		if d == nil {
+			return fmt.Errorf("workflow references unknown target or daemon %q", name)
+		}
+		var envOverlay map[string]string
+		if profile != nil {
+			envOverlay = profile.Env
+		}
+		pid, containerID, err := lifecycle.StartDaemon(context.Background(), rootDir, d, dotenvMap, cliEnv, envOverlay, nil)
+		if err != nil {
+			return fmt.Errorf("start daemon %q: %w", d.Name, err)
+		}
+		if err := lifecycle.AddDaemon(rootDir, d.Name, pid, containerID); err != nil {
+			return fmt.Errorf("save state: %w", err)
+		}
+		if containerID != "" {
+			idShort := containerID
+			if len(idShort) > 12 {
+				idShort = idShort[:12]
+			}
+			fmt.Fprintf(os.Stderr, "bake: started daemon %q (container %s)\n", d.Name, idShort)
+		} else {
+			fmt.Fprintf(os.Stderr, "bake: started daemon %q (pid %d)\n", d.Name, pid)
+		}
+	}
+	// Optional schedule: re-run workflow targets (not daemons) on cron/interval until ctx is done.
+	if tgt.WorkflowSchedule == nil {
+		return nil
+	}
+	sched := tgt.WorkflowSchedule
+	var workflowTargets []string
+	for _, name := range tgt.Workflow {
+		if cfg.TargetByName(name) != nil {
+			workflowTargets = append(workflowTargets, name)
+		}
+	}
+	if len(workflowTargets) == 0 {
+		return nil
+	}
+	if ctx == nil {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+	}
+	if sched.Interval != "" {
+		dur, err := time.ParseDuration(sched.Interval)
+		if err != nil {
+			return fmt.Errorf("workflow schedule interval %q: %w", sched.Interval, err)
+		}
+		ticker := time.NewTicker(dur)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				for _, name := range workflowTargets {
+					runTgt := cfg.TargetByName(name)
+					opts.TargetEnv = runTgt.Env
+					if profile != nil {
+						opts.TargetEnv = mergeEnv(profile.Env, runTgt.Env)
+					}
+					if err := runner.Run(context.Background(), cfg, name, opts); err != nil {
+						fmt.Fprintf(os.Stderr, "bake: schedule run %q: %v\n", name, err)
+					}
+				}
+			}
+		}
+	}
+	if sched.Cron != "" {
+		cr := cron.New()
+		_, err := cr.AddFunc(sched.Cron, func() {
+			for _, name := range workflowTargets {
+				runTgt := cfg.TargetByName(name)
+				opts.TargetEnv = runTgt.Env
+				if profile != nil {
+					opts.TargetEnv = mergeEnv(profile.Env, runTgt.Env)
+				}
+				if err := runner.Run(context.Background(), cfg, name, opts); err != nil {
+					fmt.Fprintf(os.Stderr, "bake: schedule run %q: %v\n", name, err)
+				}
+			}
+		})
+		if err != nil {
+			return fmt.Errorf("workflow schedule cron %q: %w", sched.Cron, err)
+		}
+		cr.Start()
+		defer cr.Stop()
+		<-ctx.Done()
+	}
+	return nil
+}
+
+// stopDaemonEntry stops a daemon recorded in state (either host process or container).
+func stopDaemonEntry(ctx context.Context, _ string, entry lifecycle.DaemonEntry) error {
+	if entry.ContainerID != "" {
+		return lifecycle.StopDaemonContainer(ctx, entry.ContainerID)
+	}
+	return lifecycle.StopDaemon(entry.PID)
+}
+
+func runDown(daemonName string) error {
+	rootDir, _, err := config.FindBakefile(".")
+	if err != nil {
+		return err
+	}
+	state, err := lifecycle.Load(rootDir)
+	if err != nil {
+		return err
+	}
+	if daemonName != "" {
+		entry, ok := state.Daemons[daemonName]
+		if !ok {
+			return fmt.Errorf("daemon %q not in state (not running?)", daemonName)
+		}
+		if err := stopDaemonEntry(context.Background(), daemonName, entry); err != nil {
+			return fmt.Errorf("stop daemon %q: %w", daemonName, err)
+		}
+		if err := lifecycle.RemoveDaemon(rootDir, daemonName); err != nil {
+			return err
+		}
+		if entry.ContainerID != "" {
+			fmt.Fprintf(os.Stderr, "bake: stopped daemon %q (container)\n", daemonName)
+		} else {
+			fmt.Fprintf(os.Stderr, "bake: stopped daemon %q (pid %d)\n", daemonName, entry.PID)
+		}
+		return nil
+	}
+	for name, entry := range state.Daemons {
+		if err := stopDaemonEntry(context.Background(), name, entry); err != nil {
+			if entry.ContainerID != "" {
+				fmt.Fprintf(os.Stderr, "bake: warning stopping %q (container): %v\n", name, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "bake: warning stopping %q (pid %d): %v\n", name, entry.PID, err)
+			}
+		}
+		if err := lifecycle.RemoveDaemon(rootDir, name); err != nil {
+			return err
+		}
+		if entry.ContainerID != "" {
+			fmt.Fprintf(os.Stderr, "bake: stopped daemon %q (container)\n", name)
+		} else {
+			fmt.Fprintf(os.Stderr, "bake: stopped daemon %q (pid %d)\n", name, entry.PID)
+		}
+	}
+	if len(state.Daemons) == 0 {
+		fmt.Fprintf(os.Stderr, "bake: no daemons in state\n")
+	}
+	return nil
 }
 
 func runTarget(cfg *config.File, name string, tgt *config.Target, declared, live map[string]string, passthroughByStep map[int][]string, cliEnv map[string]string, profile *config.Profile, preset *config.Preset, showCmd, jsonMode bool, maxParallel int, timing, artifacts bool) error {
@@ -809,8 +1041,9 @@ func runChoose(ciMode bool, profileName string, showCmd bool, cliEnv, cliArgs ma
 	targets := cfg.Targets
 	if su := cfg.SuiteByName(suiteName); su != nil {
 		names := make(map[string]bool)
-		for _, n := range su.Targets {
-			names[n] = true
+		for _, ref := range su.Targets {
+			targetName, _ := config.ParseSuiteEntry(ref)
+			names[targetName] = true
 		}
 		var filtered []*config.Target
 		for _, t := range cfg.Targets {

@@ -60,3 +60,5 @@ To submit:
 ## Formula location
 
 The formula lives in the **tap** (evmac/homebrew-bake), in `Formula/bake.rb`. Create and maintain it there; set `url` and `sha256` to the release tarball for each version you ship (or rely on the release workflow to update those two fields automatically).
+
+**Version in the binary:** To have `bake --version` print the release version (e.g. `v1.6.0`), the formula’s `go build` step should pass ldflags, e.g. `-ldflags "-X main.Version=#{version}"` (Ruby) so the version matches the tag. If the formula doesn’t set this, `bake --version` will show `dev`.

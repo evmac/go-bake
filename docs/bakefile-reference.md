@@ -2,14 +2,14 @@
 
 ## Overview
 
-A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `profile`, `import`, `preset`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`, `private`, `pool`, `mutex`, `image`, `unsafe`, `net`, `vol`. A suite named **`precommit`** is used by **`bake install hooks`** (see [Installing git hooks](install-hooks.md)). Comments: `#` to end of line. Bake automatically formats and lints the Bakefile when loading (unless `BAKE_NO_AUTOFORMAT` / `BAKE_NO_AUTOLINT`); you can also run **`bake format`** or **`bake fmt`** (with **`-w`**) and **`bake lint`** (with **`--fix`**) manually.
+A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `profile`, `import`, `preset`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`, `private`, `pool`, `mutex`, `image`, `unsafe`, `net`, `vol`, `daemon`. A suite named **`precommit`** is used by **`bake install hooks`** (see [Installing git hooks](install-hooks.md)). Comments: `#` to end of line. Bake automatically formats and lints the Bakefile when loading (unless `BAKE_NO_AUTOFORMAT` / `BAKE_NO_AUTOLINT`); you can also run **`bake format`** or **`bake fmt`** (with **`-w`**) and **`bake lint`** (with **`--fix`**) manually.
 
 ## File structure
 
 - Optional **dotenv** line: `dotenv .env .env.local`
-- One or more **target**, **suite**, or **profile** blocks (and optional **import**, **private**)
+- One or more **target**, **suite**, or **profile** blocks (and optional **import**, **private**). **Workflow** and **daemons** are not first-class: they are **sub-blocks inside a target**. **`bake up`** runs the **target named `up`**; that target’s **workflow** and **daemon** clauses define what runs.
 
-**Formatter order** — **`bake format`** (and auto-format on load) writes file entries in a canonical order: **suites** (alphabetically by name), then **profiles** (alphabetically by name), then **targets** (alphabetically by name). Within each suite, the list of targets is also sorted by name. Imports and the file-level **private** marker stay before suites.
+**Formatter order** — **`bake format`** (and auto-format on load) writes file entries in a canonical order: **suites** (alphabetically by name), then **profiles** (alphabetically by name), then **targets** (alphabetically by name). Within each suite, the list of targets is sorted by name. Imports and the file-level **private** marker stay before suites.
 
 ## Targets
 
@@ -195,6 +195,27 @@ target unsafe-on-host {
 ```
 
 Image pull behavior can be set with **`BAKE_PULL`**: `always`, `never`, or `if-not-present` (default).
+
+**Runtime selection** — Set **`BAKE_RUNTIME`** to `docker` (default), `podman`, `containerd`, or `crio` to choose the container runtime. For Podman, if **`DOCKER_HOST`** is not set, bake uses the default Podman socket (`$XDG_RUNTIME_DIR/podman/podman.sock` or `/run/podman/podman.sock`). For containerd/CRI-O, set **`DOCKER_HOST`** to a Docker-compatible endpoint (e.g. nerdctl).
+
+## Workflow and daemons (v1.6)
+
+Workflow and daemons are **not first-class** objects: they are **sub-blocks inside a target**. **`bake up`** runs the **target named `up`**; that target’s **workflow** clause lists what to run (in order), and its **daemon** clauses define long-running units.
+
+- **workflow** `{` *name* ... `}` — Inside a target only (e.g. **target up**). Ordered list of target names (run that target with deps) and daemon names (start the daemon defined in this target’s **daemon** clauses). **`bake up`** runs the target **`up`** by executing its workflow.
+- **daemon** *name* `{` ... `}` — Inside a target only. Long-running unit; body can include **steps**, **env**, **cwd**, **image**, **unsafe** (same as target). No **deps**, **inputs**, **outputs**, **when**, or **preset**. When the name appears in this target’s **workflow**, **`bake up`** starts it in the background and records its PID in **`.bake/state.json`**. **`bake down`** stops all daemons in state; **`bake down`** *daemon* stops that daemon only.
+
+**Example:**
+
+```bake
+target build { steps { exec ["go", "build"] } }
+target up {
+  workflow { build redis }
+  daemon redis { steps { exec ["redis-server"] } }
+}
+```
+
+Running **`bake up`** runs the **up** target: executes `build` then starts `redis` in the background. Running **`bake down`** stops the redis process.
 
 ## Precommit (hooks)
 

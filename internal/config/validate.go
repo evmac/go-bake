@@ -151,5 +151,47 @@ func Validate(cfg *File) []ValidationError {
 		}
 	}
 
+	// Target workflow and daemons: workflow names must be target or daemon (in same target); daemon names must not conflict with targets or duplicate
+	for _, t := range cfg.Targets {
+		daemonByName := make(map[string]int) // name -> line
+		for _, d := range t.Daemons {
+			if d == nil {
+				continue
+			}
+			if first, ok := daemonByName[d.Name]; ok {
+				errs = append(errs, ValidationError{
+					Filename: filename,
+					Line:     d.Line,
+					Column:   d.Column,
+					Message:  fmt.Sprintf("duplicate daemon %q in target %q (first at line %d)", d.Name, t.Name, first),
+				})
+			} else {
+				daemonByName[d.Name] = d.Line
+			}
+			if cfg.TargetByName(d.Name) != nil {
+				errs = append(errs, ValidationError{
+					Filename: filename,
+					Line:     d.Line,
+					Column:   d.Column,
+					Message:  fmt.Sprintf("daemon %q conflicts with target of same name", d.Name),
+				})
+			}
+		}
+		for _, name := range t.Workflow {
+			if cfg.TargetByName(name) != nil {
+				continue
+			}
+			if daemonByName[name] != 0 {
+				continue
+			}
+			errs = append(errs, ValidationError{
+				Filename: filename,
+				Line:     t.Line,
+				Column:   t.Column,
+				Message:  fmt.Sprintf("target %q workflow references unknown target or daemon %q", t.Name, name),
+			})
+		}
+	}
+
 	return errs
 }

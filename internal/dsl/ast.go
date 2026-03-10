@@ -15,12 +15,20 @@ type Bakefile struct {
 }
 
 // FileEntry is an import, Suite, Target, Profile, or file-level private marker.
+// Workflow and daemons are not first-class; they are sub-blocks inside a target (e.g. target up { workflow { ... }; daemon x { ... } }).
 type FileEntry struct {
-	Import  *ImportLine    `  @@`
-	Suite   *SuiteBlock    `| @@`
-	Target  *TargetBlock   `| @@`
-	Profile *ProfileBlock  `| @@`
-	Private *PrivateMarker `| @@`
+	Import   *ImportLine    `  @@`
+	Suite    *SuiteBlock    `| @@`
+	Target   *TargetBlock   `| @@`
+	Profile  *ProfileBlock  `| @@`
+	Private  *PrivateMarker `| @@`
+}
+
+// DaemonBlock is "daemon" ident "{" body "}" — long-running unit (steps, env, cwd, image). Defined only inside a target (e.g. target up { workflow { ... }; daemon x { ... } }); not first-class.
+type DaemonBlock struct {
+	Pos  lexer.Position
+	Name string      `"daemon" @Ident`
+	Body *TargetBody `"{" @@ "}"`
 }
 
 // ProfileBlock is "profile" ident "{" dotenv? env? "}".
@@ -143,7 +151,7 @@ type TargetBody struct {
 	Entries []*BodyEntry `@@*`
 }
 
-// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private, preset, image, unsafe, net, vol.
+// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private, preset, pool, mutex, image, unsafe, net, vol, workflow, daemon.
 type BodyEntry struct {
 	Deps        *DepsClause        `  @@`
 	Steps       *StepsBlock        `| @@`
@@ -166,6 +174,27 @@ type BodyEntry struct {
 	Unsafe      *UnsafeClause      `| @@`
 	Net         *NetClause         `| @@`
 	Vol         *VolClause         `| @@`
+	Workflow    *WorkflowClause    `| @@` // workflow { name* } — order for bake up; not first-class
+	Daemon      *DaemonBlock       `| @@` // daemon name { ... } — long-running unit; not first-class
+}
+
+// WorkflowClause is "workflow" "{" (Ident | ScheduleClause)* "}" — ordered list of target/daemon names and optional schedule.
+type WorkflowClause struct {
+	Pos     lexer.Position
+	Entries []*WorkflowEntry `"workflow" "{" @@* "}"`
+}
+
+// WorkflowEntry is one ident (target or daemon name) or a schedule clause.
+type WorkflowEntry struct {
+	Schedule *ScheduleClause `( @@ |`
+	Ident    string         `  @Ident )`
+}
+
+// ScheduleClause is "schedule cron \"...\"" or "schedule interval \"...\"" inside a workflow.
+type ScheduleClause struct {
+	Pos     lexer.Position
+	Cron    *QuotedString `  "schedule" "cron" @String`
+	Interval *QuotedString `| "schedule" "interval" @String`
 }
 
 // ImageClause is "image" followed by ident or quoted string (image reference).
@@ -186,7 +215,7 @@ type NetClause struct {
 
 // VolClause is "vol" ident or "vol" ident string (name, optional host path). v1.5: name only.
 type VolClause struct {
-	Name     string       `"vol" @Ident`
+	Name     string        `"vol" @Ident`
 	HostPath *QuotedString `( @String )?`
 }
 

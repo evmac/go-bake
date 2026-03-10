@@ -6,7 +6,9 @@ Use this for reliable Bakefile generation.
 
 - **dotenv** — `dotenv .env .env.local`
 - **suite** — `suite name { target1 target2 target.preset }`
-- **target** — `target name { ... }` or single-line `target name cmd prog arg1 arg2`
+- **target** — `target name { ... }` or single-line `target name cmd prog arg1 arg2`. A target can contain **workflow** and **daemon** sub-blocks (e.g. **target up { workflow { build redis } daemon redis { steps { exec ["redis-server"] } } }**). **`bake up`** runs the **target named `up`** and executes its workflow.
+- **workflow** — `workflow { target1 daemon1 }` — **inside a target only**; ordered list of target names and daemon names for that target. Not first-class.
+- **daemon** — `daemon name { steps { exec ["prog"] } env { K V } cwd path image ref }` — **inside a target only**; long-running unit. Started by **`bake up`** when name appears in that target’s workflow; **`bake down`** or **`bake down name`** stops it.
 
 ## Target body (bracketed)
 
@@ -36,8 +38,10 @@ Use this for reliable Bakefile generation.
 
 ## CLI (relevant for generation)
 
+- **bake --version** — Print version and exit.
 - **bake lint** — Lint Bakefile; `--fix` to auto-fix (prefer `exec` over `cmd`, brackets). Prefer `exec` and `desc` for targets when generating.
 - **bake --watch &lt;target&gt;** — Re-run when inputs change.
+- **bake up** — Run target `up` (execute its workflow: targets then daemons); **bake down** — stop all daemons; **bake down &lt;name&gt;** — stop one daemon.
 
 ## Example
 

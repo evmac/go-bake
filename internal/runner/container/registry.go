@@ -41,7 +41,7 @@ func NewDockerNetVolRegistry(cli dockerNetVolClient) *DockerNetVolRegistry {
 // a NetVolRegistry and a close function. If the client cannot be created, returns an error.
 // Call close() when the run is finished (e.g. defer close()).
 func NewDockerRegistryFromEnv() (NetVolRegistry, func(), error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.NewClientWithOpts(ClientOpts()...)
 	if err != nil {
 		return nil, nil, err
 	}

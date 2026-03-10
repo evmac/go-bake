@@ -9,7 +9,7 @@ See the container/compose plan for architecture (containers, daemons, lifecycle,
 ## v1.0 — Initial release (done)
 
 - [x] **CLI** — `bake [target | suite]`, default target, `--list` / `--ci` (suite-filtered list), `--dry-run`, `--explain <target>`, `bake install` (shims in `.bake/bin`).
-- [x] **Bakefile DSL** — Targets and suites; `deps`, `steps` (`exec` / `cmd` / `shell`), `env`, `args`, `cwd`, `desc`, `dotenv`; declared and live args; template expansion `{{.name}}` / `{{.live.key}}`.
+- [x] **Bakefile DSL** — Targets and suites; `deps`, `steps` (`exec` / `cmd` / `shell`), `env`, `args`, `cwd`, `desc`, `dotenv`; declared and live args; template expansion `{{.name}}` / `{{.live.key}}`. Comments: `#` to end of line (lexer elides; parser ignores).
 - [x] **Basic passthrough** — `passthrough step = N`; args after `--` on CLI are appended to that step's argv.
 
 ## v1.1 — Incremental builds and validation (done)
@@ -55,15 +55,18 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 - [x] **Base image + container executor** — Image statement; run steps in container when image present. Docker as default runtime; **`BAKE_PULL`** (always / never / if-not-present) for download semantics. Honor **`unsafe`**, opts out of sandbox.
 - [x] **Volumes/networks runtime** — First reference to a named **`net`** or **`vol`** (in execution order) creates it; later targets attach to the same. No separate network/volume block keywords.
 
-## v1.6 — Runtimes, daemons, and lifecycle
+## v1.6 — Runtimes, daemons, and lifecycle (done)
 
-- [ ] **Runtime selection** — User config to choose runtime (Podman, containerd, CRI-O); OCI internally.
-- [ ] **Composable sub-blocks** — Workflow block (0 or 1), daemon blocks (0+); schedule inside workflow. **Note:** In targets (and in workflow blocks when we add them), you can omit the `steps { }` wrapper when there is only one step — use bare `exec ["..."]` or `cmd ...` (see [Bakefile reference](bakefile-reference.md)).
-- [ ] **Lifecycle** — State file, startup order (deps → workflow → daemons), teardown, `bake down` / `bake down <target>`.
+- [x] **Runtime selection** — User config to choose runtime (Podman, containerd, CRI-O); OCI internally. **`BAKE_RUNTIME`** (docker | podman | containerd | crio); Podman uses default socket when **`DOCKER_HOST`** unset.
+- [x] **Composable sub-blocks** — Workflow and daemons are not first-class; they are **sub-blocks inside a target**. **`bake up`** runs the **target named `up`**; that target has **workflow { ... }** (order of targets and daemons) and **daemon name { ... }** (definitions). **Note:** In targets you can omit the `steps { }` wrapper when there is only one step — use bare `exec ["..."]` or `cmd ...` (see [Bakefile reference](bakefile-reference.md)).
+- [x] **Lifecycle** — State file (`.bake/state.json`), startup order (deps → workflow targets → daemons), teardown, **`bake up`** / **`bake down`** / **`bake down <daemon>`**.
+- [x] **Schedule inside workflow** — Optional **schedule** inside the workflow block (e.g. `workflow { build schedule interval "1h" }` or `schedule cron "0 * * * *"`). Run workflow once (targets + daemons), then re-run workflow targets on cron or interval until interrupt; daemons stay up.
+- [x] **Daemon container scope** — When a daemon has **image**, start it as a container (track container ID in state); **bake down** stops/removes the container. Host daemons (exec/cmd, no image) keep current PID-based lifecycle. Daemon blocks support **net** / **vol** like targets.
+- [x] **--version** — **`bake --version`** prints the release version; set at build time via `-ldflags "-X main.Version=..."` (e.g. in the Homebrew formula).
 
 ## v1.7 — Agent block and agentic
 
-- [ ] **agent block** — Inside workflow blocks; defines agentic semantics. Steps run before agent; all run on schedule. Scope to expand (allowlist, capability, schema).
+- [ ] **agent block** — Inside workflow (e.g. inside target up); defines agentic semantics. Steps run before agent; all run on schedule. Scope to expand (allowlist, capability, schema).
 - [ ] **Agentic** — `bake plan --json`, allowlist, one approval per target.
 
 ## v1.8 — baked (background daemon)
@@ -93,6 +96,45 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 - **List with deps** — `--list --deps` (or similar): show each target’s deps next to it in the list.
 - **when os / when arch** — Platform conditionals (e.g. `when os linux`, `when arch amd64`) in addition to `when env` / `when cmd`.
 - **Composable variants** — Allow combining multiple named modifiers on a single target invocation (e.g. `bake test cover race`), unlike presets which select exactly one named configuration. Presets are static and mutually exclusive; composable variants would layer on top of each other.
+
+--
+
+## Workflow, daemon, schedule (design notes)
+
+**Schedule** — Scoped for next version (v1.7). Lives **inside** the workflow block only: `workflow { steps { ... } schedule { cron "0 * * * *" } }` (syntax TBD). Means “run this workflow on a schedule.” No interaction with daemons (you don’t schedule a daemon).
+
+**Job** — Deprecated; not reserved. Single-step workflow is sufficient.
+
+**Workflow: intended vs optional “run target”**  
+- **Intended:** Workflow is the sub-block that holds **steps, inputs, outputs** (and optionally schedule). Running the target runs that workflow (its steps), then starts any daemons. No “list of target names” by design.
+- **Optional “workflow run target”:** If we allowed a workflow to run another target, it could look like one of these (not committed):
+
+```bake
+# Option A: explicit run clause
+target up {
+  workflow {
+    run build
+    steps { exec ["migrate", "up"] }
+    run test
+  }
+  daemon api { ... }
+}
+
+# Option B: workflow targets = list of targets to run before this workflow’s steps
+target up {
+  workflow {
+    targets build migrate
+    steps { exec ["seed"] }
+  }
+  daemon api { ... }
+}
+```
+
+So “workflow selects a target to run” would be an extra clause (e.g. **run** *target* or **targets** *name* ...) inside the workflow block; primary content remains **steps** (and inputs/outputs/schedule).
+
+**Daemon lifecycle: host vs container**  
+- **Host (current):** Daemon body uses **exec** / **cmd** / **shell** (no **image**). `StartDaemon` runs an `exec.Cmd` on the host, records **PID** in `.bake/state.json`. **bake down** sends SIGTERM (or Kill on Windows) to that PID. Lifecycle = process.
+- **Container (contextualized):** When daemon has **image** (and optionally **net**, **vol**), lifecycle could be: start a **container** (e.g. `docker run`), record **container ID** in state, **bake down** stops/removes that container. So daemon is “contextualized to container scope” when `image` is set: same daemon block, but execution and teardown are container-based instead of host process. Today **image** on a daemon is not used by `internal/lifecycle/daemon.go` — only host process is implemented; container-scoped daemon would be a follow-up (start container for daemon’s step, track ID, stop on down).
 
 --
 

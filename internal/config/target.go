@@ -65,6 +65,19 @@ type Target struct {
 	Networks []string
 	// Volumes: named volumes (and optional bind mounts) to attach; first reference creates.
 	Volumes []VolumeRef
+
+	// Workflow: when non-nil, this target is run as "bake up" by executing these names in order (run target or start daemon from Daemons). Not first-class; sub-block of target.
+	Workflow []string
+	// WorkflowSchedule: when set, after running workflow once, re-run workflow targets on cron or interval; daemons stay up.
+	WorkflowSchedule *WorkflowSchedule
+	// Daemons: long-running units defined by daemon sub-blocks in this target; referenced by Workflow. Not first-class.
+	Daemons []*Daemon
+}
+
+// WorkflowSchedule is cron expression or interval duration (e.g. "0 * * * *" or "1h"). At most one is set.
+type WorkflowSchedule struct {
+	Cron     string // cron spec (5 fields: min hour dom month dow)
+	Interval string // duration string, e.g. "1h", "30m"
 }
 
 // VolumeRef is a volume name and optional host path for bind mount. HostPath empty = named volume only.

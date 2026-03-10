@@ -6,7 +6,7 @@ suite ci {
 suite precommit {
   build
   format
-  test
+  test.no-cache
 }
 
 target act {

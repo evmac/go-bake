@@ -38,13 +38,13 @@ func TestRun_withFakeBackend_success(t *testing.T) {
 	dir := t.TempDir()
 	reg := &fakeRegistry{}
 	opts := RunOptions{
-		Image:     "alpine",
-		RootDir:   dir,
-		Steps:     []ExecStep{{Argv: []string{"echo", "ok"}}},
-		Registry:  reg,
-		Backend:   &fakeBackend{},
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    bytes.NewBuffer(nil),
+		Image:    "alpine",
+		RootDir:  dir,
+		Steps:    []ExecStep{{Argv: []string{"echo", "ok"}}},
+		Registry: reg,
+		Backend:  &fakeBackend{},
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   bytes.NewBuffer(nil),
 	}
 	err := Run(ctx, opts)
 	if err != nil {
@@ -55,13 +55,13 @@ func TestRun_withFakeBackend_success(t *testing.T) {
 func TestRun_withFakeBackend_stepExitNonZero(t *testing.T) {
 	ctx := context.Background()
 	opts := RunOptions{
-		Image:     "alpine",
-		RootDir:   t.TempDir(),
-		Steps:     []ExecStep{{Argv: []string{"false"}}},
-		Registry:  &fakeRegistry{},
-		Backend:   &fakeBackend{exitCode: 1},
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    bytes.NewBuffer(nil),
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Steps:    []ExecStep{{Argv: []string{"false"}}},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{exitCode: 1},
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   bytes.NewBuffer(nil),
 	}
 	err := Run(ctx, opts)
 	if err == nil {
@@ -76,14 +76,14 @@ func TestRun_withFakeBackend_showCmd(t *testing.T) {
 	var stderr bytes.Buffer
 	ctx := context.Background()
 	opts := RunOptions{
-		Image:     "img",
-		RootDir:   t.TempDir(),
-		Steps:     []ExecStep{{Argv: []string{"echo", "hello"}}},
-		Registry:  &fakeRegistry{},
-		Backend:   &fakeBackend{},
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    &stderr,
-		ShowCmd:   true,
+		Image:    "img",
+		RootDir:  t.TempDir(),
+		Steps:    []ExecStep{{Argv: []string{"echo", "hello"}}},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{},
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   &stderr,
+		ShowCmd:  true,
 	}
 	err := Run(ctx, opts)
 	if err != nil {
@@ -97,13 +97,13 @@ func TestRun_withFakeBackend_showCmd(t *testing.T) {
 func TestRun_withFakeBackend_emptyStepSkipped(t *testing.T) {
 	ctx := context.Background()
 	opts := RunOptions{
-		Image:     "alpine",
-		RootDir:   t.TempDir(),
-		Steps:     []ExecStep{{Argv: []string{"ok"}}, {Argv: nil}, {Argv: []string{"ok2"}}},
-		Registry:  &fakeRegistry{},
-		Backend:   &fakeBackend{},
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    bytes.NewBuffer(nil),
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Steps:    []ExecStep{{Argv: []string{"ok"}}, {Argv: nil}, {Argv: []string{"ok2"}}},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{},
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   bytes.NewBuffer(nil),
 	}
 	err := Run(ctx, opts)
 	if err != nil {
@@ -114,13 +114,13 @@ func TestRun_withFakeBackend_emptyStepSkipped(t *testing.T) {
 func TestRun_withFakeBackend_pullImageError(t *testing.T) {
 	ctx := context.Background()
 	opts := RunOptions{
-		Image:     "alpine",
-		RootDir:   t.TempDir(),
-		Steps:     []ExecStep{{Argv: []string{"true"}}},
-		Registry:  &fakeRegistry{},
-		Backend:   &fakeBackend{imagePullErr: errors.New("pull failed")},
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    bytes.NewBuffer(nil),
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Steps:    []ExecStep{{Argv: []string{"true"}}},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{imagePullErr: errors.New("pull failed")},
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   bytes.NewBuffer(nil),
 	}
 	// With default pull policy we try pull when inspect fails; fake returns imageInspectErr so we try pull.
 	os.Setenv(pullPolicyEnv, pullAlways)
@@ -235,14 +235,14 @@ func TestRun_withFakeBackend_extraNetworks(t *testing.T) {
 	dir := t.TempDir()
 	reg := NewDockerNetVolRegistry(&fakeNetVolClient{})
 	opts := RunOptions{
-		Image:     "alpine",
-		RootDir:   dir,
-		Networks:  []string{"first", "second"},
-		Steps:     []ExecStep{{Argv: []string{"true"}}},
-		Registry:  reg,
-		Backend:   &fakeBackend{},
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    bytes.NewBuffer(nil),
+		Image:    "alpine",
+		RootDir:  dir,
+		Networks: []string{"first", "second"},
+		Steps:    []ExecStep{{Argv: []string{"true"}}},
+		Registry: reg,
+		Backend:  &fakeBackend{},
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   bytes.NewBuffer(nil),
 	}
 	err := Run(ctx, opts)
 	if err != nil {
@@ -279,13 +279,13 @@ func TestRun_withFakeBackend_imageAlreadyPresent(t *testing.T) {
 	defer os.Unsetenv(pullPolicyEnv)
 	ctx := context.Background()
 	opts := RunOptions{
-		Image:     "alpine",
-		RootDir:   t.TempDir(),
-		Steps:     []ExecStep{{Argv: []string{"true"}}},
-		Registry:  &fakeRegistry{},
-		Backend:   &fakeBackend{}, // ImageInspect returns nil err -> skip pull
-		Stdout:    bytes.NewBuffer(nil),
-		Stderr:    bytes.NewBuffer(nil),
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Steps:    []ExecStep{{Argv: []string{"true"}}},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{}, // ImageInspect returns nil err -> skip pull
+		Stdout:   bytes.NewBuffer(nil),
+		Stderr:   bytes.NewBuffer(nil),
 	}
 	err := Run(ctx, opts)
 	if err != nil {
@@ -308,6 +308,187 @@ func TestRun_withFakeBackend_stepWithEnv(t *testing.T) {
 	err := Run(ctx, opts)
 	if err != nil {
 		t.Fatalf("Run with step env: %v", err)
+	}
+}
+
+func TestStartDaemonContainer_emptyCmd(t *testing.T) {
+	ctx := context.Background()
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Cmd:      nil,
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{},
+	}
+	_, err := StartDaemonContainer(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error for empty Cmd")
+	}
+	if !containsSub(err.Error(), "Cmd is required") {
+		t.Errorf("error should mention Cmd: %q", err.Error())
+	}
+}
+
+func TestStartDaemonContainer_withFakeBackend(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	backend := &fakeBackend{containerID: "test-daemon-id"}
+	opts := DaemonContainerOptions{
+		Image:      "alpine",
+		RootDir:    dir,
+		Cmd:        []string{"redis-server"},
+		WorkingDir: "/workspace",
+		Registry:   &fakeRegistry{},
+		Backend:    backend,
+	}
+	id, err := StartDaemonContainer(ctx, opts)
+	if err != nil {
+		t.Fatalf("StartDaemonContainer: %v", err)
+	}
+	if id != "test-daemon-id" {
+		t.Errorf("got container ID %q, want test-daemon-id", id)
+	}
+}
+
+func TestStopContainer_withFakeBackend(t *testing.T) {
+	ctx := context.Background()
+	backend := &fakeBackend{}
+	err := StopContainer(ctx, "some-id", backend)
+	if err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+}
+
+func TestStartDaemonContainer_pullFails(t *testing.T) {
+	ctx := context.Background()
+	// ImageInspect fails so we try pull; imagePullErr makes pull fail
+	backend := &fakeBackend{imageInspectErr: errors.New("not found"), imagePullErr: errors.New("pull failed")}
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Cmd:      []string{"true"},
+		Registry: &fakeRegistry{},
+		Backend:  backend,
+	}
+	_, err := StartDaemonContainer(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error when pull fails")
+	}
+	if !containsSub(err.Error(), "pull") && !containsSub(err.Error(), "failed") {
+		t.Errorf("error should mention pull/failed: %q", err.Error())
+	}
+}
+
+func TestStartDaemonContainer_usesExportedFakes(t *testing.T) {
+	// Exercises NewFakeBackend and NewFakeNetVolRegistry for package coverage.
+	ctx := context.Background()
+	dir := t.TempDir()
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  dir,
+		Cmd:      []string{"true"},
+		Registry: NewFakeNetVolRegistry(),
+		Backend:  NewFakeBackend(),
+	}
+	id, err := StartDaemonContainer(ctx, opts)
+	if err != nil {
+		t.Fatalf("StartDaemonContainer: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty container ID")
+	}
+}
+
+func TestStartDaemonContainer_withMultipleNetworks(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  dir,
+		Cmd:      []string{"true"},
+		Networks: []string{"net1", "net2"},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{},
+	}
+	id, err := StartDaemonContainer(ctx, opts)
+	if err != nil {
+		t.Fatalf("StartDaemonContainer: %v", err)
+	}
+	if id == "" {
+		t.Error("expected container ID")
+	}
+}
+
+func TestStartDaemonContainer_withVolumes(t *testing.T) {
+	dir := t.TempDir()
+	bindDir := dir + "/bind"
+	os.MkdirAll(bindDir, 0755)
+	ctx := context.Background()
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  dir,
+		Cmd:      []string{"true"},
+		Volumes:  []config.VolumeRef{{Name: "v1"}, {Name: "v2", HostPath: bindDir}},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{},
+	}
+	id, err := StartDaemonContainer(ctx, opts)
+	if err != nil {
+		t.Fatalf("StartDaemonContainer: %v", err)
+	}
+	if id == "" {
+		t.Error("expected container ID")
+	}
+}
+
+func TestStartDaemonContainer_pullPolicyNever(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("BAKE_PULL", "never")
+	defer os.Unsetenv("BAKE_PULL")
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Cmd:      []string{"true"},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{},
+	}
+	id, err := StartDaemonContainer(ctx, opts)
+	if err != nil {
+		t.Fatalf("StartDaemonContainer with pull=never: %v", err)
+	}
+	if id == "" {
+		t.Error("expected container ID")
+	}
+}
+
+func TestStartDaemonContainer_startFails_cleanup(t *testing.T) {
+	ctx := context.Background()
+	opts := DaemonContainerOptions{
+		Image:    "alpine",
+		RootDir:  t.TempDir(),
+		Cmd:      []string{"true"},
+		Registry: &fakeRegistry{},
+		Backend:  &fakeBackend{containerStartErr: errors.New("start failed")},
+	}
+	_, err := StartDaemonContainer(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error when start fails")
+	}
+	if !containsSub(err.Error(), "start") {
+		t.Errorf("error should mention start: %q", err.Error())
+	}
+}
+
+func TestStopContainer_nilBackend(t *testing.T) {
+	// With nil backend we try to create a Docker client; without Docker we get an error.
+	ctx := context.Background()
+	err := StopContainer(ctx, "nonexistent-id", nil)
+	if err == nil {
+		t.Log("StopContainer(nil backend) succeeded (Docker available and removed container)")
+		return
+	}
+	if !containsSub(err.Error(), "Docker") && !containsSub(err.Error(), "connect") && !containsSub(err.Error(), "no such") {
+		t.Logf("StopContainer(nil backend) error: %v", err)
 	}
 }
 

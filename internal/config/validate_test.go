@@ -90,6 +90,56 @@ func TestValidateSuiteUnknownTarget(t *testing.T) {
 	}
 }
 
+func TestValidateSuiteUnknownRef(t *testing.T) {
+	cfg := &File{
+		Targets: []*Target{{Name: "build"}},
+		Suites:  []*Suite{{Name: "up", Targets: []string{"build", "missing"}}},
+	}
+	errs := Validate(cfg)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "suite") || !strings.Contains(errs[0].Message, "missing") {
+		t.Errorf("unexpected message: %s", errs[0].Message)
+	}
+}
+
+func TestValidateDaemonConflictAndDuplicate(t *testing.T) {
+	cfg := &File{
+		Targets: []*Target{
+			{Name: "build"},
+			{
+				Name:     "up",
+				Workflow: []string{"build", "redis"},
+				Daemons: []*Daemon{
+					{Name: "build", Line: 2},
+					{Name: "redis", Line: 3},
+					{Name: "redis", Line: 4},
+				},
+			},
+		},
+	}
+	errs := Validate(cfg)
+	if len(errs) < 2 {
+		t.Fatalf("expected at least 2 errors (conflict + duplicate), got %d: %v", len(errs), errs)
+	}
+	var hasConflict, hasDup bool
+	for _, e := range errs {
+		if strings.Contains(e.Message, "conflicts with target") {
+			hasConflict = true
+		}
+		if strings.Contains(e.Message, "duplicate daemon") {
+			hasDup = true
+		}
+	}
+	if !hasConflict {
+		t.Error("expected error about daemon conflicting with target")
+	}
+	if !hasDup {
+		t.Error("expected error about duplicate daemon")
+	}
+}
+
 func TestValidationErrorError(t *testing.T) {
 	e := ValidationError{Filename: "Bakefile", Line: 2, Column: 3, Message: "test error"}
 	s := e.Error()

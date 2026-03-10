@@ -34,7 +34,7 @@ func (f *formatter) writeBakefile(ast *Bakefile) error {
 		}
 		f.write("\n\n")
 	}
-	// Group file entries by type; output order: imports, private, suites (by name), profiles (by name), targets (by name).
+	// Group file entries by type; output order: imports, private, suites (by name), profiles (by name), targets (by name). Daemons are inline inside suites (e.g. suite up).
 	var imports []*ImportLine
 	var hasPrivate bool
 	var suites []*SuiteBlock
@@ -135,6 +135,24 @@ func (f *formatter) writeProfile(p *ProfileBlock) {
 	f.write("}\n")
 }
 
+func (f *formatter) writeDaemon(d *DaemonBlock) {
+	if d == nil || d.Body == nil {
+		if d != nil {
+			f.write("daemon " + d.Name + " {\n}\n")
+		}
+		return
+	}
+	f.write("daemon " + d.Name + " {\n")
+	entries := orderBodyEntries(d.Body.Entries)
+	for _, e := range entries {
+		// Daemon body: only steps, env, cwd, image, unsafe (no deps, inputs, outputs, when, preset)
+		if e.Steps != nil || e.Step != nil || e.Env != nil || e.Cwd != nil || e.Image != nil || e.Unsafe != nil {
+			f.writeBodyEntry(e, "  ")
+		}
+	}
+	f.write("}\n")
+}
+
 func (f *formatter) writeTarget(t *TargetBlock) {
 	if t == nil {
 		return
@@ -159,7 +177,7 @@ func (f *formatter) writeTarget(t *TargetBlock) {
 
 // orderBodyEntries returns body entries in canonical order.
 func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
-	var desc, deps, whenEnv, whenCmd, inputs, outputs, args, env, cwd, tags, private, passthrough, presets, pool, mutex, image, unsafe, nets, vols, steps []*BodyEntry
+	var desc, deps, whenEnv, whenCmd, inputs, outputs, args, env, cwd, tags, private, passthrough, presets, pool, mutex, image, unsafe, nets, vols, steps, workflow, daemons []*BodyEntry
 	for _, e := range entries {
 		if e == nil {
 			continue
@@ -205,6 +223,10 @@ func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
 			vols = append(vols, e)
 		case e.Steps != nil, e.Step != nil:
 			steps = append(steps, e)
+		case e.Workflow != nil:
+			workflow = append(workflow, e)
+		case e.Daemon != nil:
+			daemons = append(daemons, e)
 		}
 	}
 	var out []*BodyEntry
@@ -227,6 +249,8 @@ func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
 	out = append(out, nets...)
 	out = append(out, vols...)
 	out = append(out, steps...)
+	out = append(out, workflow...)
+	out = append(out, daemons...)
 	out = append(out, presets...)
 	return out
 }
@@ -374,6 +398,41 @@ func (f *formatter) writeBodyEntry(e *BodyEntry, indent string) {
 			f.writeQuoted(e.Vol.HostPath.Value)
 		}
 		f.write("\n")
+	case e.Workflow != nil:
+		f.write(indent + "workflow {")
+		for _, entry := range e.Workflow.Entries {
+			if entry == nil {
+				continue
+			}
+			if entry.Ident != "" {
+				f.write(" " + entry.Ident)
+			}
+			if entry.Schedule != nil {
+				if entry.Schedule.Cron != nil {
+					f.write(" schedule cron ")
+					f.writeQuoted(entry.Schedule.Cron.Value)
+				}
+				if entry.Schedule.Interval != nil {
+					f.write(" schedule interval ")
+					f.writeQuoted(entry.Schedule.Interval.Value)
+				}
+			}
+		}
+		f.write(" }\n")
+	case e.Daemon != nil:
+		d := e.Daemon
+		f.write(indent + "daemon " + d.Name + " {\n")
+		if d.Body != nil {
+			for _, be := range orderBodyEntries(d.Body.Entries) {
+				if be == nil {
+					continue
+				}
+				if be.Steps != nil || be.Step != nil || be.Env != nil || be.Cwd != nil || be.Image != nil || be.Unsafe != nil {
+					f.writeBodyEntry(be, indent+"  ")
+				}
+			}
+		}
+		f.write(indent + "}\n")
 	case e.Steps != nil:
 		f.write(indent + "steps {")
 		if len(e.Steps.Steps) == 0 {
@@ -473,7 +532,6 @@ func (f *formatter) writeSuite(s *SuiteBlock) {
 		return
 	}
 	f.write("suite " + s.Name + " {\n")
-	// Order suite entries (target names or "target preset") by name.
 	entries := make([]*SuiteEntry, 0, len(s.Entries))
 	for _, e := range s.Entries {
 		if e != nil {
