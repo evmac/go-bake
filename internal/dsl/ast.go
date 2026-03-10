@@ -143,7 +143,7 @@ type TargetBody struct {
 	Entries []*BodyEntry `@@*`
 }
 
-// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private, preset.
+// BodyEntry is one of deps, steps, a single step (exec/cmd/shell), env, args, cwd, desc, tags, passthrough, inputs, outputs, when, private, preset, image, unsafe, net, vol.
 type BodyEntry struct {
 	Deps        *DepsClause        `  @@`
 	Steps       *StepsBlock        `| @@`
@@ -162,6 +162,32 @@ type BodyEntry struct {
 	Preset      *PresetBlock       `| @@`
 	Pool        *PoolClause        `| @@`
 	Mutex       *MutexClause       `| @@`
+	Image       *ImageClause       `| @@`
+	Unsafe      *UnsafeClause      `| @@`
+	Net         *NetClause         `| @@`
+	Vol         *VolClause         `| @@`
+}
+
+// ImageClause is "image" followed by ident or quoted string (image reference).
+type ImageClause struct {
+	Ident  *string       `"image" @Ident |`
+	String *QuotedString `"image" @String`
+}
+
+// UnsafeClause is "unsafe" — target runs on host even if image is set.
+type UnsafeClause struct {
+	Pos lexer.Position `"unsafe"`
+}
+
+// NetClause is "net" ident — named network to attach; first reference creates.
+type NetClause struct {
+	Name string `"net" @Ident`
+}
+
+// VolClause is "vol" ident or "vol" ident string (name, optional host path). v1.5: name only.
+type VolClause struct {
+	Name     string       `"vol" @Ident`
+	HostPath *QuotedString `( @String )?`
 }
 
 // PoolClause is "pool" ident — target uses this named pool (semaphore).

@@ -38,6 +38,12 @@ bake [global-flags] [target [preset] | suite] [target-args] [--] [passthrough]
 | `BAKE_NO_AUTOFORMAT` | Skip automatic format-on-load (set to `1` or `true` to disable). |
 | `BAKE_NO_AUTOLINT` | Skip automatic lint-on-load (set to `1` or `true` to disable). |
 
+## Environment (containerized targets)
+
+| Variable | Effect |
+|----------|--------|
+| `BAKE_PULL` | When a target has **image** and runs in Docker: `always`, `never`, or `if-not-present` (default). |
+
 ## Commands
 
 - **bake** (no args) — run the default target (first target or one named `default`).

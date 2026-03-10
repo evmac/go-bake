@@ -71,6 +71,7 @@ Then:
 - `bake ci` — run the ci suite (build, test)
 - `bake lint` — lint the Bakefile (optional `--fix`); see [Lint](docs/lint.md)
 - `bake --watch build` — re-run `build` when inputs change
+- **Container targets** — use **`image "alpine:3.19"`** (and optional **`net`** / **`vol`**) in a target to run its steps in Docker. See [Bakefile reference](docs/bakefile-reference.md#image-unsafe-net-and-vol-containerization).
 - `bake install` — install all components (create minimal Bakefile if none; install shims and hooks). Use **`bake install shims`** for shims only, **`bake install hooks`** for the pre-commit hook only. See [Installing shims](docs/install-shims.md) and [Installing git hooks](docs/install-hooks.md).
 
 ## CI

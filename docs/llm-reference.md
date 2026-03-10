@@ -19,6 +19,9 @@ Use this for reliable Bakefile generation.
 - **tags** — `tags t1 t2`
 - **passthrough** — `passthrough step = 1`
 - **preset** — `preset name { desc "..." argv ["flag"] env { K V } steps { exec [...] } }` — named preset (argv appends, env overlays, steps replaces)
+- **image** — `image "alpine:3.19"` or `image alpine` — run steps in a container (Docker); requires Docker.
+- **unsafe** — run on host even when **image** is set.
+- **net** / **vol** — `net mynet`, `vol myvol`, or `vol data ./path` — attach container to named network/volume (first reference creates).
 
 ## Step forms
 

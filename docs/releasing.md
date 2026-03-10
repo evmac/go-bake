@@ -48,18 +48,6 @@ Ship-it praxis: human review → commit → tag → push → release via GitHub.
    gh release create v1.4.0 --generate-notes
    ```
 
-   Or with a custom title/notes:
-
-   ```bash
-   gh release create v1.4.0 --title "v1.4.0" --notes-file CHANGELOG.md
-   ```
-
-   To attach binaries (e.g. built elsewhere), add paths at the end:
-
-   ```bash
-   gh release create v1.4.0 --generate-notes bin/bake-linux-amd64 bin/bake-darwin-arm64
-   ```
-
 ## Pre-commit
 
 We don’t use the [pre-commit](https://pre-commit.com/) framework. Before pushing (or before commit), run:
@@ -71,10 +59,13 @@ bake lint
 
 Use **`bake install hooks`** to install a git pre-commit hook that runs **`bake precommit`** on every commit; see [Installing git hooks](install-hooks.md).
 
-## Checklist
+## Release checklist
 
-- [ ] `bake ci` passes
-- [ ] `bake lint` passes (or acceptable findings)
-- [ ] Version and docs (e.g. `docs/future.md`) updated
-- [ ] Tag matches intended version (e.g. `v1.4.0`)
-- [ ] Pushed tag triggers release; Homebrew tap updates automatically on `release: published`
+Before you consider a release done, make sure you've **actively completed each step** below:
+
+- [ ] Run `bake precommit` and ensure all checks pass (formatting, lint, unit/integration tests).
+- [ ] Bump the version in the appropriate places (e.g., CLI output, core code, and `docs/future.md`).
+- [ ] Double-check that your git tag (e.g., `v1.4.0`) matches the release version.
+- [ ] Push both the branch and the tag to GitHub to trigger the release workflow. Ensure the GitHub Actions workflow (`release: published`) runs and the Homebrew tap is updated automatically.
+
+**Tip:** If any step fails, fix the issue, recommit, re-tag if necessary, and retry. Don't assume automation will correct mistakes!

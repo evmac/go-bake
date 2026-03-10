@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `profile`, `import`, `preset`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`, `private`, `pool`, `mutex`. A suite named **`precommit`** is used by **`bake install hooks`** (see [Installing git hooks](install-hooks.md)). Comments: `#` to end of line. Bake automatically formats and lints the Bakefile when loading (unless `BAKE_NO_AUTOFORMAT` / `BAKE_NO_AUTOLINT`); you can also run **`bake format`** or **`bake fmt`** (with **`-w`**) and **`bake lint`** (with **`--fix`**) manually.
+A Bakefile is a custom DSL. Keywords: `target`, `deps`, `steps`, `exec`, `cmd`, `shell`, `env`, `args`, `dotenv`, `suite`, `profile`, `import`, `preset`, `cwd`, `desc`, `tags`, `passthrough`, `inputs`, `outputs`, `when`, `private`, `pool`, `mutex`, `image`, `unsafe`, `net`, `vol`. A suite named **`precommit`** is used by **`bake install hooks`** (see [Installing git hooks](install-hooks.md)). Comments: `#` to end of line. Bake automatically formats and lints the Bakefile when loading (unless `BAKE_NO_AUTOFORMAT` / `BAKE_NO_AUTOLINT`); you can also run **`bake format`** or **`bake fmt`** (with **`-w`**) and **`bake lint`** (with **`--fix`**) manually.
 
 ## File structure
 
@@ -169,6 +169,32 @@ suite ci { build lint test format.check test.cover }
 - **mutex** *name* — target holds this mutex while running. Only one target holding a given mutex name runs at a time.
 
 Use with **`--max-parallel`** to run independent targets in parallel while limiting contention (e.g. `pool docker` for targets that use Docker).
+
+## Image, unsafe, net, and vol (containerization)
+
+- **image** *ref* — run this target’s steps inside a container using the given image (e.g. `image "alpine:3.19"` or `image alpine`). Docker is the default runtime. Requires Docker (or compatible daemon) to be available; otherwise bake reports an error.
+- **unsafe** — run this target on the host even when **image** is set (opts out of the container sandbox).
+- **net** *name* — attach the container to this named network. The first target (in execution order) that references a name creates the network; later targets attach to the same one.
+- **vol** *name* or **vol** *name* *hostPath* — mount a named volume or bind-mount. **vol** *name* creates a Docker named volume at first reference; **vol** *name* *hostPath* bind-mounts the given host path (relative to Bakefile root) into the container at `/mnt/<name>`.
+
+**Example:**
+
+```bake
+target in-docker {
+  image "alpine:3.19"
+  net mynet
+  vol cache
+  steps { exec ["sh", "-c", "echo hello"] }
+}
+
+target unsafe-on-host {
+  image alpine
+  unsafe
+  steps { exec ["echo", "runs on host"] }
+}
+```
+
+Image pull behavior can be set with **`BAKE_PULL`**: `always`, `never`, or `if-not-present` (default).
 
 ## Precommit (hooks)
 

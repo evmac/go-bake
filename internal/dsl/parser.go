@@ -231,6 +231,26 @@ func compileTarget(t *TargetBlock, filePrivate bool) (*config.Target, error) {
 			if e.Mutex != nil {
 				tgt.Mutex = e.Mutex.Name
 			}
+			if e.Image != nil {
+				if e.Image.Ident != nil {
+					tgt.Image = *e.Image.Ident
+				} else {
+					tgt.Image = e.Image.String.Value
+				}
+			}
+			if e.Unsafe != nil {
+				tgt.Unsafe = true
+			}
+			if e.Net != nil {
+				tgt.Networks = append(tgt.Networks, e.Net.Name)
+			}
+			if e.Vol != nil {
+				ref := config.VolumeRef{Name: e.Vol.Name}
+				if e.Vol.HostPath != nil {
+					ref.HostPath = e.Vol.HostPath.Value
+				}
+				tgt.Volumes = append(tgt.Volumes, ref)
+			}
 		}
 	}
 	if len(t.CmdTok) > 0 {

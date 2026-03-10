@@ -159,7 +159,7 @@ func (f *formatter) writeTarget(t *TargetBlock) {
 
 // orderBodyEntries returns body entries in canonical order.
 func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
-	var desc, deps, whenEnv, whenCmd, inputs, outputs, args, env, cwd, tags, private, passthrough, presets, pool, mutex, steps []*BodyEntry
+	var desc, deps, whenEnv, whenCmd, inputs, outputs, args, env, cwd, tags, private, passthrough, presets, pool, mutex, image, unsafe, nets, vols, steps []*BodyEntry
 	for _, e := range entries {
 		if e == nil {
 			continue
@@ -195,6 +195,14 @@ func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
 			pool = append(pool, e)
 		case e.Mutex != nil:
 			mutex = append(mutex, e)
+		case e.Image != nil:
+			image = append(image, e)
+		case e.Unsafe != nil:
+			unsafe = append(unsafe, e)
+		case e.Net != nil:
+			nets = append(nets, e)
+		case e.Vol != nil:
+			vols = append(vols, e)
 		case e.Steps != nil, e.Step != nil:
 			steps = append(steps, e)
 		}
@@ -214,6 +222,10 @@ func orderBodyEntries(entries []*BodyEntry) []*BodyEntry {
 	out = append(out, passthrough...)
 	out = append(out, pool...)
 	out = append(out, mutex...)
+	out = append(out, image...)
+	out = append(out, unsafe...)
+	out = append(out, nets...)
+	out = append(out, vols...)
 	out = append(out, steps...)
 	out = append(out, presets...)
 	return out
@@ -343,6 +355,25 @@ func (f *formatter) writeBodyEntry(e *BodyEntry, indent string) {
 		f.write(indent + "pool " + e.Pool.Name + "\n")
 	case e.Mutex != nil:
 		f.write(indent + "mutex " + e.Mutex.Name + "\n")
+	case e.Image != nil:
+		if e.Image.Ident != nil {
+			f.write(indent + "image " + *e.Image.Ident + "\n")
+		} else {
+			f.write(indent + "image ")
+			f.writeQuoted(e.Image.String.Value)
+			f.write("\n")
+		}
+	case e.Unsafe != nil:
+		f.write(indent + "unsafe\n")
+	case e.Net != nil:
+		f.write(indent + "net " + e.Net.Name + "\n")
+	case e.Vol != nil:
+		f.write(indent + "vol " + e.Vol.Name)
+		if e.Vol.HostPath != nil && e.Vol.HostPath.Value != "" {
+			f.write(" ")
+			f.writeQuoted(e.Vol.HostPath.Value)
+		}
+		f.write("\n")
 	case e.Steps != nil:
 		f.write(indent + "steps {")
 		if len(e.Steps.Steps) == 0 {

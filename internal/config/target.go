@@ -56,6 +56,21 @@ type Target struct {
 	Pool string
 	// Mutex ensures only one target holding this mutex name runs at a time (mutex per name).
 	Mutex string
+
+	// Image: when non-empty, run this target's steps in a container (Docker). Empty = run on host.
+	Image string
+	// Unsafe: when true, run on host even if Image is set (opts out of container sandbox).
+	Unsafe bool
+	// Networks: named networks to attach the container to; first reference in execution order creates.
+	Networks []string
+	// Volumes: named volumes (and optional bind mounts) to attach; first reference creates.
+	Volumes []VolumeRef
+}
+
+// VolumeRef is a volume name and optional host path for bind mount. HostPath empty = named volume only.
+type VolumeRef struct {
+	Name     string
+	HostPath string
 }
 
 // PassthroughSlot is a step that receives passthrough args (by index or optional name).

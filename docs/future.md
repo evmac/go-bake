@@ -25,7 +25,7 @@ See the container/compose plan for architecture (containers, daemons, lifecycle,
 - [x] **Conditionals (when)** — Run a target only when a condition holds; skip (no-op) otherwise. Form: `when env VAR` or `when cmd ["prog", "args"]`. Dependencies still resolved; guard evaluated before target steps.
 - [x] **Test coverage** — tests updated to improve coverage and integrate with CI.
 
-## v1.3 — Profiles, CLI, formatter, and discoverability
+## v1.3 — Profiles, CLI, formatter, and discoverability (done)
 
 - [x] **Profiles as overlays** — First-class profile overlays (base → profile → CLI).
 - [x] **Override via CLI** — `--set env.FOO=bar` (explicit flag). Use case: one-off env/args for a run without editing the Bakefile. See [Parameterization](parameterization.md) (passthrough vs overrides vs presets).
@@ -36,7 +36,7 @@ See the container/compose plan for architecture (containers, daemons, lifecycle,
 - [x] **Reverse deps** — `--what-depends-on <target>`: list targets that depend on the given target (refactoring and impact analysis).
 - [x] **List with status** — Optional `--list` output showing per-target incremental status (would run / skipped) when useful.
 
-## v1.4 — Passthrough, presets, concurrency, watch, CI, and JSON output
+## v1.4 — Passthrough, presets, concurrency, watch, CI, and JSON output (done)
 
 Normalized use cases: [Parameterization](parameterization.md) (passthrough · overrides · presets).
 
@@ -50,10 +50,10 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 - [x] **Precommit and install-hooks** — Define **`suite precommit { ... }`**; **`bake install hooks`** writes `.git/hooks/pre-commit` to run **`bake precommit`** (optional; only when that suite is present). Auto format and lint on load (unless `BAKE_NO_AUTOFORMAT` / `BAKE_NO_AUTOLINT`); lint applies fixes and surfaces only unfixable errors.
 - [x] **Default suite ci** — **`suite ci`** is the conventional default for CI: **`--ci`** / **`CI=1`** and **`bake ci`** use it. Define **`suite ci { build lint test }`** and run **`bake ci`** in your CI config. Possible future: **`bake install ci`** to emit a minimal CI workflow snippet that runs **`bake ci`** (see backlog).
 
-## v1.5 — Containerization support
+## v1.5 — Containerization support (done)
 
-- [ ] **Base image + container executor** — Image statement; StepExecutor; run steps in container when image present. Docker as default runtime; download semantics TBD. Honor `unsafe`, opts out of sandbox.
-- [ ] **Volumes/networks runtime** — First reference to a named `net` or `vol` (in execution order) creates it; later targets attach to the same. No separate network/volume block keywords.
+- [x] **Base image + container executor** — Image statement; run steps in container when image present. Docker as default runtime; **`BAKE_PULL`** (always / never / if-not-present) for download semantics. Honor **`unsafe`**, opts out of sandbox.
+- [x] **Volumes/networks runtime** — First reference to a named **`net`** or **`vol`** (in execution order) creates it; later targets attach to the same. No separate network/volume block keywords.
 
 ## v1.6 — Runtimes, daemons, and lifecycle
 
@@ -93,6 +93,12 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 - **List with deps** — `--list --deps` (or similar): show each target’s deps next to it in the list.
 - **when os / when arch** — Platform conditionals (e.g. `when os linux`, `when arch amd64`) in addition to `when env` / `when cmd`.
 - **Composable variants** — Allow combining multiple named modifiers on a single target invocation (e.g. `bake test cover race`), unlike presets which select exactly one named configuration. Presets are static and mutually exclusive; composable variants would layer on top of each other.
+
+--
+
+## Homebrew distribution
+
+- [x] **Homebrew personal tap** — Separate repo ([homebrew-bake](https://github.com/evmac/homebrew-bake)) with CI that builds and publishes the formula on each go-bake release; version aligned with go-bake. Trigger from go-bake release workflow via `repository_dispatch`.
 
 --
 

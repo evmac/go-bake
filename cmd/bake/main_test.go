@@ -1076,6 +1076,39 @@ func TestRunWatchReRunOnChange(t *testing.T) {
 	}
 }
 
+// TestRunMainContainerTarget runs a target with image (requires Docker); skipped in -short.
+func TestRunMainContainerTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("container test requires Docker")
+	}
+	dir := t.TempDir()
+	bf := `target in-container {
+  desc "run in container (integration test)"
+  image "alpine:3.19"
+  steps { exec ["sh", "-c", "echo ok"] }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"in-container"})
+	if err != nil {
+		// Docker may be unavailable
+		if strings.Contains(err.Error(), "Docker") || strings.Contains(err.Error(), "daemon") {
+			t.Skipf("Docker unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
 func TestBakeNoTargetShowsError(t *testing.T) {
 	exe := buildBake(t)
 	// Run from a dir with no Bakefile so we get "no Bakefile" or "no target" error

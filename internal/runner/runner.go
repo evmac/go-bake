@@ -18,6 +18,7 @@ import (
 	"github.com/evmac/go-bake/internal/config"
 	"github.com/evmac/go-bake/internal/env"
 	"github.com/evmac/go-bake/internal/resolve"
+	"github.com/evmac/go-bake/internal/runner/container"
 )
 
 // RunEvent is one NDJSON line for machine-readable output (--json).
@@ -50,6 +51,7 @@ type RunOptions struct {
 	Mutexes           *sync.Map                                   // optional: name -> *sync.Mutex (mutex per name)
 	TimingReporter    func(target string, duration time.Duration) // optional: called when a target finishes (for --timing)
 	ArtifactReporter  func(target string, paths []string)         // optional: called with output paths after a target runs (for --artifacts)
+	NetVolRegistry container.NetVolRegistry // optional: for containerized targets (image); first reference creates net/vol
 }
 
 func emitEvent(w io.Writer, e RunEvent) {
@@ -89,6 +91,13 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 	}
 	if opts.Mutexes == nil {
 		opts.Mutexes = &sync.Map{}
+	}
+	// Optional Docker net/vol registry for containerized targets (image); create once per run.
+	if opts.NetVolRegistry == nil {
+		if reg, closeFn, err := container.NewDockerRegistryFromEnv(); err == nil {
+			opts.NetVolRegistry = reg
+			defer closeFn()
+		}
 	}
 	if opts.MaxParallel <= 1 {
 		// Sequential: original behavior
@@ -141,7 +150,7 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 			}
 			runOpts := opts
 			if name != targetName {
-				runOpts = RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv, EventWriter: ev, MaxParallel: opts.MaxParallel, PoolSems: opts.PoolSems, Mutexes: opts.Mutexes}
+				runOpts = RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv, EventWriter: ev, MaxParallel: opts.MaxParallel, PoolSems: opts.PoolSems, Mutexes: opts.Mutexes, NetVolRegistry: opts.NetVolRegistry}
 			}
 			wg.Add(1)
 			go func(n string, d *config.Target, ro RunOptions) {
@@ -452,6 +461,82 @@ func runTargetSteps(ctx context.Context, tgt *config.Target, rootDir string, dot
 	if passthroughStep <= 0 && len(steps) > 0 {
 		passthroughStep = len(steps)
 	}
+
+	// Container path: run all steps inside a single container when image is set and not unsafe.
+	if tgt.Image != "" && !tgt.Unsafe {
+		if opts.NetVolRegistry == nil {
+			return fmt.Errorf("Docker is required for target %q with image %q (install Docker or set DOCKER_HOST)", tgt.Name, tgt.Image)
+		}
+		var execSteps []container.ExecStep
+		for i, step := range steps {
+			argv := append([]string{}, step.Argv...)
+			if len(data) > 0 {
+				exp, err := resolve.ExpandArgv(argv, data)
+				if err != nil {
+					return fmt.Errorf("step %d: %w", i+1, err)
+				}
+				argv = exp
+			}
+			stepNum := i + 1
+			if usePresetArgv && stepNum == passthroughStep {
+				argv = append(argv, opts.Preset.Argv...)
+			}
+			if opts.PassthroughByStep != nil && len(opts.PassthroughByStep[stepNum]) > 0 {
+				argv = append(argv, opts.PassthroughByStep[stepNum]...)
+			}
+			if len(argv) == 0 {
+				continue
+			}
+			if step.Runner != "" {
+				argv = append([]string{step.Runner}, argv...)
+			}
+			stepEnv := mergedEnv
+			if len(step.Env) > 0 {
+				stepEnv = make(map[string]string)
+				for k, v := range mergedEnv {
+					stepEnv[k] = v
+				}
+				toMerge := step.Env
+				if len(data) > 0 {
+					exp, err := resolve.ExpandEnv(step.Env, data)
+					if err != nil {
+						return fmt.Errorf("step %d env: %w", i+1, err)
+					}
+					toMerge = exp
+				}
+				for k, v := range toMerge {
+					stepEnv[k] = v
+				}
+			}
+			stepCwd := cwd
+			if step.Cwd != "" {
+				stepCwd = filepath.Join(rootDir, step.Cwd)
+			}
+			execSteps = append(execSteps, container.ExecStep{Argv: argv, Env: stepEnv, WorkingDir: stepCwd})
+		}
+		var stepOut, stepErr io.Writer = os.Stdout, os.Stderr
+		if opts.StepStdout != nil {
+			stepOut = opts.StepStdout
+		}
+		if opts.StepStderr != nil {
+			stepErr = opts.StepStderr
+		}
+		err := container.Run(ctx, container.RunOptions{
+			Image:     tgt.Image,
+			RootDir:   rootDir,
+			TargetCwd: tgt.Cwd,
+			Networks:  tgt.Networks,
+			Volumes:   tgt.Volumes,
+			Steps:     execSteps,
+			Registry:  opts.NetVolRegistry,
+			Stdout:    stepOut,
+			Stderr:    stepErr,
+			ShowCmd:   opts.ShowCmd,
+		})
+		return err
+	}
+
+	// Host path: run each step via runStep.
 	for i, step := range steps {
 		argv := append([]string{}, step.Argv...)
 		if len(data) > 0 {

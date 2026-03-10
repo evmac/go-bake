@@ -672,6 +672,60 @@ func TestParseSuiteWithPresetEntry(t *testing.T) {
 	}
 }
 
+func TestParseTargetWithImageUnsafeNetVol(t *testing.T) {
+	// image (ident and string), unsafe, net, vol parse and compile
+	src := `
+target in-container {
+  image "alpine:3.19"
+  net mynet
+  vol myvol
+  steps { exec ["sh", "-c", "echo ok"] }
+}
+target with-ident-image {
+  image alpine
+  unsafe
+  steps { exec ["true"] }
+}
+target with-vol-hostpath {
+  image "busybox"
+  vol data "/tmp/data"
+  steps { exec ["true"] }
+}
+`
+	ast, err := Parser.ParseString("", src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(cfg.Targets) != 3 {
+		t.Fatalf("expected 3 targets, got %d", len(cfg.Targets))
+	}
+	// in-container: image string, net, vol (no hostpath), no unsafe
+	t0 := cfg.Targets[0]
+	if t0.Name != "in-container" || t0.Image != "alpine:3.19" || t0.Unsafe {
+		t.Errorf("target 0: Name=%q Image=%q Unsafe=%v", t0.Name, t0.Image, t0.Unsafe)
+	}
+	if len(t0.Networks) != 1 || t0.Networks[0] != "mynet" {
+		t.Errorf("target 0 Networks: got %v", t0.Networks)
+	}
+	if len(t0.Volumes) != 1 || t0.Volumes[0].Name != "myvol" || t0.Volumes[0].HostPath != "" {
+		t.Errorf("target 0 Volumes: got %+v", t0.Volumes)
+	}
+	// with-ident-image: image ident, unsafe
+	t1 := cfg.Targets[1]
+	if t1.Name != "with-ident-image" || t1.Image != "alpine" || !t1.Unsafe {
+		t.Errorf("target 1: Name=%q Image=%q Unsafe=%v", t1.Name, t1.Image, t1.Unsafe)
+	}
+	// with-vol-hostpath: vol with host path
+	t2 := cfg.Targets[2]
+	if len(t2.Volumes) != 1 || t2.Volumes[0].Name != "data" || t2.Volumes[0].HostPath != "/tmp/data" {
+		t.Errorf("target 2 Volumes: got %+v", t2.Volumes)
+	}
+}
+
 func TestValidationErrListError(t *testing.T) {
 	// validationErrList.Error() joins multiple errors
 	errs := validationErrList{

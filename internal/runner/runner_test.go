@@ -112,6 +112,41 @@ func TestRunWithMutex(t *testing.T) {
 	}
 }
 
+// TestRunTargetWithImageRequiresDocker: target with image runs in container when Docker available;
+// when Docker unavailable or image missing, returns an error mentioning Docker/image.
+func TestRunTargetWithImageRequiresDocker(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "in-container", Image: "alpine:3.19", Steps: []config.Step{{Argv: []string{"echo", "ok"}}}},
+		},
+	}
+	err := Run(context.Background(), cfg, "in-container", RunOptions{RootDir: dir})
+	if err == nil {
+		return // Docker available and ran successfully
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "Docker") && !strings.Contains(msg, "image") && !strings.Contains(msg, "container") && !strings.Contains(msg, "pull") && !strings.Contains(msg, "daemon") {
+		t.Errorf("error for target with image should mention Docker/image/container/pull/daemon: %q", msg)
+	}
+}
+
+// TestRunTargetWithImageUnsafeRunsOnHost: target with image and unsafe runs on host (no container).
+func TestRunTargetWithImageUnsafeRunsOnHost(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.File{
+		RootDir: dir,
+		Targets: []*config.Target{
+			{Name: "unsafe-host", Image: "alpine:3.19", Unsafe: true, Steps: []config.Step{{Argv: []string{"echo", "on-host"}}}},
+		},
+	}
+	err := Run(context.Background(), cfg, "unsafe-host", RunOptions{RootDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestRunMaxParallel exercises LevelOrder and parallel execution (emitEvent on parallel path).
 func TestRunMaxParallel(t *testing.T) {
 	dir := t.TempDir()
