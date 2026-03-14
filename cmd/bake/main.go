@@ -5,11 +5,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +29,9 @@ import (
 	"github.com/evmac/go-bake/internal/lint"
 	"github.com/evmac/go-bake/internal/resolve"
 	"github.com/evmac/go-bake/internal/runner"
+	"github.com/evmac/go-bake/internal/daemonclient"
+	"github.com/evmac/go-bake/internal/daemonproto"
+	"github.com/evmac/go-bake/internal/shim"
 	"github.com/robfig/cron/v3"
 )
 
@@ -98,6 +105,7 @@ func RunMain(args []string) (int, error) {
 	timing := fs.Bool("timing", false, "Print per-target duration summary after run")
 	artifacts := fs.Bool("artifacts", false, "Print output paths of targets that produced artifacts")
 	watch := fs.Bool("watch", false, "Re-run target when inputs change (poll-based)")
+	noDaemon := fs.Bool("no-daemon", false, "Run in-process only; do not start or use baked daemon")
 	debug := fs.Bool("debug", false, "Enable debug logging (or set BAKE_DEBUG=1)")
 	showVersion := fs.Bool("version", false, "Print version and exit")
 	var setVals setFlags
@@ -200,6 +208,13 @@ func RunMain(args []string) (int, error) {
 		return 0, nil
 	}
 	target := posArgs[0]
+	useDaemon := !*noDaemon && os.Getenv("BAKE_DAEMON") != "0" && os.Getenv("BAKE_NO_DAEMON") == ""
+	if useDaemon && (target == "up" || target == "down" || target != "install") {
+		if code, err := tryDaemon(target, posArgs); err == nil {
+			return code, nil
+		}
+		// Fall back to in-process
+	}
 	if *watch {
 		if err := runWatch(context.Background(), target, posArgs[1:], cliEnv, cliArgs, *profileName, *showCmd, *maxParallel); err != nil {
 			return 2, err
@@ -223,8 +238,14 @@ func RunMain(args []string) (int, error) {
 			}
 			return 0, nil
 		}
+		if sub == "daemon" {
+			if err := runInstallDaemon(); err != nil {
+				return 2, err
+			}
+			return 0, nil
+		}
 		if sub != "" {
-			return 2, fmt.Errorf("unknown install subcommand %q (use: install, install shims, install hooks)", sub)
+			return 2, fmt.Errorf("unknown install subcommand %q (use: install, install shims, install hooks, install daemon)", sub)
 		}
 		if err := runInstall(); err != nil {
 			return 2, err
@@ -309,6 +330,44 @@ func RunMain(args []string) (int, error) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func tryDaemon(target string, posArgs []string) (int, error) {
+	rootDir, _, err := config.FindBakefile(".")
+	if err != nil {
+		return 0, err
+	}
+	if err := daemonclient.EnsureStarted(rootDir); err != nil {
+		return 0, err
+	}
+	conn, err := daemonclient.Dial(rootDir)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	req := &daemonproto.Request{}
+	switch target {
+	case "up":
+		req.Up = true
+	case "down":
+		req.Down = true
+		if len(posArgs) > 1 {
+			req.Daemon = posArgs[1]
+		}
+	default:
+		req.Run = target
+	}
+	resp, err := daemonclient.SendRequest(conn, req)
+	if err != nil {
+		return 0, err
+	}
+	if resp.Output != "" {
+		fmt.Fprint(os.Stdout, resp.Output)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "bake: %s\n", resp.Error)
+	}
+	return resp.ExitCode, nil
 }
 
 func loadConfig() (*config.File, error) {
@@ -1293,28 +1352,14 @@ func runInstallShims() error {
 	if err != nil {
 		return err
 	}
+	bakeExe := "bake"
+	if exe, err := os.Executable(); err == nil {
+		bakeExe = exe
+	}
+	if err := shim.WriteShims(cfg.RootDir, cfg, bakeExe); err != nil {
+		return err
+	}
 	binDir := filepath.Join(cfg.RootDir, ".bake", "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		return fmt.Errorf("create .bake/bin: %w", err)
-	}
-	bakeExe, err := os.Executable()
-	if err != nil {
-		bakeExe = "bake"
-	}
-	names := make(map[string]bool)
-	for _, t := range cfg.Targets {
-		names[t.Name] = true
-	}
-	for _, su := range cfg.Suites {
-		names[su.Name] = true
-	}
-	for name := range names {
-		shimPath := filepath.Join(binDir, name)
-		script := fmt.Sprintf("#!/bin/sh\nexec %q %s \"$@\"\n", bakeExe, name)
-		if err := os.WriteFile(shimPath, []byte(script), 0755); err != nil {
-			return fmt.Errorf("write shim %s: %w", name, err)
-		}
-	}
 	fmt.Fprintf(os.Stderr, "bake: installed shims in %s (add to PATH: export PATH=\"%s:$PATH\")\n", binDir, binDir)
 	return nil
 }
@@ -1349,5 +1394,130 @@ func runInstallHooks() error {
 		return fmt.Errorf("write pre-commit hook: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "bake: installed pre-commit hook at %s (runs: bake precommit)\n", hookPath)
+	return nil
+}
+
+func runInstallDaemon() error {
+	rootDir, _, err := config.FindBakefile(".")
+	if err != nil {
+		return fmt.Errorf("find Bakefile: %w", err)
+	}
+	rootAbs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return fmt.Errorf("resolve workspace root: %w", err)
+	}
+	bakedExe, err := exec.LookPath("baked")
+	if err != nil {
+		// Prefer same dir as bake
+		bakeExe, _ := os.Executable()
+		if bakeExe != "" {
+			bakedExe = filepath.Join(filepath.Dir(bakeExe), "baked")
+			if _, err := os.Stat(bakedExe); err != nil {
+				bakedExe = ""
+			}
+		}
+		if bakedExe == "" {
+			return fmt.Errorf("baked not found in PATH and not next to bake binary; install baked first")
+		}
+	}
+	id := shortID(rootAbs)
+	switch runtime.GOOS {
+	case "linux":
+		return installDaemonSystemd(rootAbs, bakedExe, id)
+	case "darwin":
+		return installDaemonLaunchd(rootAbs, bakedExe, id)
+	default:
+		return fmt.Errorf("install daemon is supported only on Linux (systemd) and macOS (launchd), not %s", runtime.GOOS)
+	}
+}
+
+func shortID(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])[:8]
+}
+
+func installDaemonSystemd(rootAbs, bakedExe, id string) error {
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("create systemd user dir: %w", err)
+	}
+	name := "baked-" + id + ".service"
+	path := filepath.Join(configDir, name)
+	unit := fmt.Sprintf(`[Unit]
+Description=Baked daemon for %s
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%s
+ExecStart=%s
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+`, rootAbs, rootAbs, bakedExe)
+	if err := os.WriteFile(path, []byte(unit), 0644); err != nil {
+		return fmt.Errorf("write systemd unit: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "bake: wrote %s\n", path)
+	// Reload and enable so it starts on login; start now
+	cmd := exec.Command("systemctl", "--user", "daemon-reload")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "bake: systemctl daemon-reload: %v\n%s", err, out)
+	} else {
+		cmd = exec.Command("systemctl", "--user", "enable", name)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "bake: systemctl enable: %v\n%s", err, out)
+		} else {
+			cmd = exec.Command("systemctl", "--user", "start", name)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "bake: systemctl start: %v\n%s", err, out)
+			} else {
+				fmt.Fprintf(os.Stderr, "bake: enabled and started %s\n", name)
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "bake: to stop: systemctl --user stop %s\n", name)
+	return nil
+}
+
+func installDaemonLaunchd(rootAbs, bakedExe, id string) error {
+	agentsDir := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		return fmt.Errorf("create LaunchAgents dir: %w", err)
+	}
+	label := "com.bake.baked." + id
+	path := filepath.Join(agentsDir, label+".plist")
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>%s</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+`, label, bakedExe, rootAbs)
+	if err := os.WriteFile(path, []byte(plist), 0644); err != nil {
+		return fmt.Errorf("write launchd plist: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "bake: wrote %s\n", path)
+	cmd := exec.Command("launchctl", "load", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "bake: launchctl load: %v\n%s", err, out)
+	} else {
+		fmt.Fprintf(os.Stderr, "bake: loaded and started %s\n", label)
+	}
+	fmt.Fprintf(os.Stderr, "bake: to stop: launchctl unload %s\n", path)
 	return nil
 }

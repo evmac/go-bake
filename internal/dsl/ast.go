@@ -17,11 +17,11 @@ type Bakefile struct {
 // FileEntry is an import, Suite, Target, Profile, or file-level private marker.
 // Workflow and daemons are not first-class; they are sub-blocks inside a target (e.g. target up { workflow { ... }; daemon x { ... } }).
 type FileEntry struct {
-	Import   *ImportLine    `  @@`
-	Suite    *SuiteBlock    `| @@`
-	Target   *TargetBlock   `| @@`
-	Profile  *ProfileBlock  `| @@`
-	Private  *PrivateMarker `| @@`
+	Import  *ImportLine    `  @@`
+	Suite   *SuiteBlock    `| @@`
+	Target  *TargetBlock   `| @@`
+	Profile *ProfileBlock  `| @@`
+	Private *PrivateMarker `| @@`
 }
 
 // DaemonBlock is "daemon" ident "{" body "}" — long-running unit (steps, env, cwd, image). Defined only inside a target (e.g. target up { workflow { ... }; daemon x { ... } }); not first-class.
@@ -187,13 +187,13 @@ type WorkflowClause struct {
 // WorkflowEntry is one ident (target or daemon name) or a schedule clause.
 type WorkflowEntry struct {
 	Schedule *ScheduleClause `( @@ |`
-	Ident    string         `  @Ident )`
+	Ident    string          `  @Ident )`
 }
 
 // ScheduleClause is "schedule cron \"...\"" or "schedule interval \"...\"" inside a workflow.
 type ScheduleClause struct {
-	Pos     lexer.Position
-	Cron    *QuotedString `  "schedule" "cron" @String`
+	Pos      lexer.Position
+	Cron     *QuotedString `  "schedule" "cron" @String`
 	Interval *QuotedString `| "schedule" "interval" @String`
 }
 

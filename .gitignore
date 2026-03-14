@@ -1,6 +1,7 @@
 # Build
 bin/
 /bake
+/baked
 *.exe
 *.test
 coverage.out

@@ -22,6 +22,13 @@ target act {
   }
 }
 
+target baked {
+  desc "build the baked daemon"
+  inputs ["./cmd/baked/*.go", "./internal/*/*.go", "go.mod", "go.sum"]
+  outputs ["bin/baked"]
+  steps { exec ["go", "build", "-o", "bin/baked", "./cmd/baked"] }
+}
+
 target build {
   desc "build the bake binary"
   inputs ["./cmd/bake/*.go", "./internal/*/*.go", "go.mod", "go.sum"]

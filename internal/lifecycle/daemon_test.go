@@ -116,9 +116,9 @@ func TestStartDaemon_shellStep(t *testing.T) {
 func TestStartDaemon_withImage_usesContainer(t *testing.T) {
 	dir := t.TempDir()
 	d := &config.Daemon{
-		Name:   "redis",
-		Image:  "redis:7",
-		Steps:  []config.Step{{Argv: []string{"redis-server"}}},
+		Name:  "redis",
+		Image: "redis:7",
+		Steps: []config.Step{{Argv: []string{"redis-server"}}},
 	}
 	opts := &StartDaemonOpts{
 		Backend:  container.NewFakeBackend(),

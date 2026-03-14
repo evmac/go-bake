@@ -20,4 +20,4 @@ target test {
 }
 ```
 
-Run `bake --list`, `bake build`, `bake test`. For long-running daemons, add a **target up** with **workflow { ... }** and **daemon name { ... }** inside it, then use **`bake up`** / **`bake down`**. See [Bakefile reference](bakefile-reference.md) and [CLI reference](cli-reference.md).
+Run `bake --list`, `bake build`, `bake test`. By default bake uses the **baked** daemon (autostarted); use **`--no-daemon`** or **`BAKE_NO_DAEMON=1`** to run without it. For long-running daemons, add a **target up** with **workflow { ... }** and **daemon name { ... }** inside it, then use **`bake up`** / **`bake down`**. See [Bakefile reference](bakefile-reference.md) and [CLI reference](cli-reference.md).

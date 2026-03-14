@@ -448,6 +448,7 @@ target up {
 	defer os.Chdir(orig)
 	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
 	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
 	code, err := RunMain([]string{"up"})
 	if err != nil {
 		t.Fatalf("RunMain up: %v", err)
@@ -461,6 +462,21 @@ target up {
 	}
 	if code != 0 {
 		t.Errorf("down: exit code %d", code)
+	}
+}
+
+func TestRunMainNoDaemonRunsInProcess(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"--no-daemon", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --no-daemon build: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
 	}
 }
 
@@ -481,6 +497,7 @@ target up {
 	defer os.Chdir(orig)
 	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
 	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
 	if code, err := RunMain([]string{"up"}); err != nil || code != 0 {
 		t.Fatalf("up: %v (code %d)", err, code)
 	}
@@ -681,6 +698,7 @@ target up {
 	defer os.Chdir(orig)
 	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
 	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
 	code, err := RunMain([]string{"up"})
 	if err == nil {
 		t.Fatal("expected error for unknown workflow ref")
@@ -706,6 +724,7 @@ target up {
 	defer os.Chdir(orig)
 	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
 	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
 	code, err := RunMain([]string{"--profile", "nonexistent", "up"})
 	if err == nil {
 		t.Fatal("expected error for unknown profile")
@@ -904,6 +923,86 @@ suite precommit { lint }
 	}
 }
 
+func TestRunMainInstallDaemonNoBakefile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"install", "daemon"})
+	if err == nil {
+		t.Fatal("expected error for install daemon with no Bakefile")
+	}
+	if code != 2 {
+		t.Errorf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(err.Error(), "find Bakefile") && !strings.Contains(err.Error(), "baked not found") {
+		t.Errorf("error should mention find Bakefile or baked not found: %v", err)
+	}
+}
+
+func TestRunMainInstallDaemonWritesUnit(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skipf("install daemon only supported on linux/darwin, not %s", runtime.GOOS)
+	}
+	dir := t.TempDir()
+	fakeHome := t.TempDir()
+	pathDir := t.TempDir()
+	// Stub "baked" so LookPath finds it
+	stubBaked := filepath.Join(pathDir, "baked")
+	if err := os.WriteFile(stubBaked, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	origWd, _ := os.Getwd()
+	origHome := os.Getenv("HOME")
+	origPath := os.Getenv("PATH")
+	os.Chdir(dir)
+	os.Setenv("HOME", fakeHome)
+	os.Setenv("PATH", pathDir+string(filepath.ListSeparator)+origPath)
+	defer func() {
+		os.Chdir(origWd)
+		os.Setenv("HOME", origHome)
+		os.Setenv("PATH", origPath)
+	}()
+	code, err := RunMain([]string{"install", "daemon"})
+	if err != nil {
+		t.Fatalf("RunMain install daemon: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	rootAbs, _ := filepath.Abs(dir)
+	if runtime.GOOS == "linux" {
+		configDir := filepath.Join(fakeHome, ".config", "systemd", "user")
+		matches, _ := filepath.Glob(filepath.Join(configDir, "baked-*.service"))
+		if len(matches) == 0 {
+			t.Fatalf("no baked-*.service under %s", configDir)
+		}
+		content, _ := os.ReadFile(matches[0])
+		if !bytes.Contains(content, []byte(rootAbs)) {
+			t.Errorf("unit should contain workspace root %q: %s", rootAbs, content)
+		}
+		if !bytes.Contains(content, []byte(stubBaked)) {
+			t.Errorf("unit should contain baked path %q: %s", stubBaked, content)
+		}
+	} else {
+		agentsDir := filepath.Join(fakeHome, "Library", "LaunchAgents")
+		matches, _ := filepath.Glob(filepath.Join(agentsDir, "com.bake.baked.*.plist"))
+		if len(matches) == 0 {
+			t.Fatalf("no com.bake.baked.*.plist under %s", agentsDir)
+		}
+		plistPath := matches[0]
+		defer exec.Command("launchctl", "unload", plistPath).Run() // clean up loaded job
+		content, _ := os.ReadFile(plistPath)
+		if !bytes.Contains(content, []byte(rootAbs)) {
+			t.Errorf("plist should contain workspace root %q: %s", rootAbs, content)
+		}
+		if !bytes.Contains(content, []byte(stubBaked)) {
+			t.Errorf("plist should contain baked path %q: %s", stubBaked, content)
+		}
+	}
+}
+
 func TestRunMainInstallUnknownSubcommand(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
@@ -919,6 +1018,9 @@ func TestRunMainInstallUnknownSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown install subcommand") {
 		t.Errorf("error should mention unknown subcommand: %v", err)
+	}
+	if !strings.Contains(err.Error(), "install daemon") {
+		t.Errorf("error should suggest install daemon: %v", err)
 	}
 }
 
@@ -1479,6 +1581,53 @@ func TestBakeNoTargetShowsError(t *testing.T) {
 	}
 }
 
+// TestBakeBuildViaDaemon starts baked, then runs "bake build" which delegates to the daemon.
+func TestBakeBuildViaDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test; run on Unix")
+	}
+	// Short path for Unix socket (macOS path length limit)
+	dir, err := os.MkdirTemp(os.TempDir(), "bt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	modRoot := repoRoot(t)
+	bakeExe := filepath.Join(dir, "bake")
+	bakedExe := filepath.Join(dir, "baked")
+	for _, b := range []struct{ name, pkg string }{
+		{"bake", "./cmd/bake"},
+		{"baked", "./cmd/baked"},
+	} {
+		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, b.name), b.pkg)
+		cmd.Dir = modRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", b.name, err, out)
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+
+	bakedCmd := exec.Command(bakedExe, "--no-watch")
+	bakedCmd.Dir = dir
+	bakedCmd.Stdout = nil
+	bakedCmd.Stderr = nil
+	if err := bakedCmd.Start(); err != nil {
+		t.Fatalf("start baked: %v", err)
+	}
+	defer bakedCmd.Process.Kill()
+	time.Sleep(200 * time.Millisecond)
+
+	pathEnv := dir + string(filepath.ListSeparator) + os.Getenv("PATH")
+	run := exec.Command(bakeExe, "build")
+	run.Dir = dir
+	run.Env = append(os.Environ(), "PATH="+pathEnv, "BAKE_NO_AUTOFORMAT=1", "BAKE_NO_AUTOLINT=1")
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bake build via daemon: %v\n%s", err, out)
+	}
+}
+
 // TestBakeUpDownIntegration runs the built binary for "bake up" then "bake down" (target up workflow + daemon lifecycle).
 func TestBakeUpDownIntegration(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -1495,7 +1644,7 @@ target up {
 	if err := os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "BAKE_NO_AUTOFORMAT=1", "BAKE_NO_AUTOLINT=1")
+	env := append(os.Environ(), "BAKE_NO_AUTOFORMAT=1", "BAKE_NO_AUTOLINT=1", "BAKE_NO_DAEMON=1")
 
 	up := exec.Command(exe, "up")
 	up.Dir = dir
@@ -1893,6 +2042,1167 @@ func TestRunMainFormatWrite(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if strings.Contains(string(data), "   build") {
 		t.Errorf("extra spaces should be removed after format: %s", data)
+	}
+}
+
+func TestRunMainUpWithDaemonWorkflow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon uses sleep; run on Unix")
+	}
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build mydb }
+  daemon mydb { steps { exec ["sleep", "0.2"] } }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"up"})
+	if err != nil {
+		t.Fatalf("RunMain up: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("up: exit code %d", code)
+	}
+	// Down all
+	code, err = RunMain([]string{"down"})
+	if err != nil {
+		t.Fatalf("RunMain down: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("down: exit code %d", code)
+	}
+}
+
+func TestRunMainWatchNoInputsRunsOnce(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target greet { desc "g" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--watch", "greet"})
+	if err != nil {
+		t.Fatalf("RunMain --watch greet (no inputs): %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+}
+
+func TestRunMainGraphSubgraph(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" deps build steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--graph", "test"})
+	if err != nil {
+		t.Fatalf("RunMain --graph test: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainWhyWithInputs(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" inputs ["src/**"] outputs ["out.bin"] steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	os.MkdirAll(filepath.Join(dir, "src"), 0755)
+	os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("package main\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--why", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --why build: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainChooseNoSuiteFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--choose"})
+	if err != nil {
+		t.Fatalf("RunMain --choose (no suite): %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainRunTargetNoSteps(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target noop { desc "nothing" }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"noop"})
+	if err != nil {
+		t.Fatalf("RunMain noop: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainDownAllWithRunningDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon uses sleep; run on Unix")
+	}
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build srv1 srv2 }
+  daemon srv1 { steps { exec ["sleep", "60"] } }
+  daemon srv2 { steps { exec ["sleep", "60"] } }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"up"})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("up: exit code %d", code)
+	}
+	// Down all (exercises the for-loop in runDown)
+	code, err = RunMain([]string{"down"})
+	if err != nil {
+		t.Fatalf("down all: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("down: exit code %d", code)
+	}
+}
+
+func TestRunMainLintNoAutoLint(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"lint"})
+	if err != nil {
+		t.Fatalf("RunMain lint: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainFormatStdoutNoBakefile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"fmt"})
+	if err == nil {
+		t.Fatal("expected error for fmt with no Bakefile")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainBuildViaDaemonInProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test; run on Unix")
+	}
+	dir, err := os.MkdirTemp(os.TempDir(), "bt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	modRoot := repoRoot(t)
+	bakedExe := filepath.Join(dir, "baked")
+	build := exec.Command("go", "build", "-o", bakedExe, "./cmd/baked")
+	build.Dir = modRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build baked: %v\n%s", err, out)
+	}
+
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+
+	bakedCmd := exec.Command(bakedExe, "--no-watch")
+	bakedCmd.Dir = dir
+	if err := bakedCmd.Start(); err != nil {
+		t.Fatalf("start baked: %v", err)
+	}
+	defer bakedCmd.Process.Kill()
+
+	sockPath := filepath.Join(dir, ".bake", "baked.sock")
+	for i := 0; i < 100; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+	}
+
+	origWd, _ := os.Getwd()
+	origPath := os.Getenv("PATH")
+	os.Chdir(dir)
+	os.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+	defer func() {
+		os.Chdir(origWd)
+		os.Setenv("PATH", origPath)
+	}()
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	// Do NOT set BAKE_NO_DAEMON — exercise the daemon path
+	code, err := RunMain([]string{"build"})
+	if err != nil {
+		t.Fatalf("RunMain build via daemon: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainUpViaDaemonInProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test; run on Unix")
+	}
+	dir, err := os.MkdirTemp(os.TempDir(), "bt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	modRoot := repoRoot(t)
+	bakedExe := filepath.Join(dir, "baked")
+	build := exec.Command("go", "build", "-o", bakedExe, "./cmd/baked")
+	build.Dir = modRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build baked: %v\n%s", err, out)
+	}
+
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+
+	bakedCmd := exec.Command(bakedExe, "--no-watch")
+	bakedCmd.Dir = dir
+	if err := bakedCmd.Start(); err != nil {
+		t.Fatalf("start baked: %v", err)
+	}
+	defer bakedCmd.Process.Kill()
+
+	sockPath := filepath.Join(dir, ".bake", "baked.sock")
+	for i := 0; i < 100; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+	}
+
+	origWd, _ := os.Getwd()
+	origPath := os.Getenv("PATH")
+	os.Chdir(dir)
+	os.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+	defer func() {
+		os.Chdir(origWd)
+		os.Setenv("PATH", origPath)
+	}()
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"up"})
+	if err != nil {
+		t.Fatalf("RunMain up via daemon: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+
+	code, err = RunMain([]string{"down"})
+	if err != nil {
+		t.Fatalf("RunMain down via daemon: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainDefaultWithNoTarget(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target other { desc "o" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, _ := RunMain([]string{})
+	if code != 0 {
+		t.Errorf("expected exit 0 (picks first target), got %d", code)
+	}
+}
+
+func TestRunMainGraphJSONSubgraph(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" deps build steps { exec ["true"] } }
+target lint { desc "l" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--graph", "json", "test"})
+	if err != nil {
+		t.Fatalf("RunMain --graph json test: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainDownViaDaemonInProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test; run on Unix")
+	}
+	dir, err := os.MkdirTemp(os.TempDir(), "bt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	modRoot := repoRoot(t)
+	bakedExe := filepath.Join(dir, "baked")
+	build := exec.Command("go", "build", "-o", bakedExe, "./cmd/baked")
+	build.Dir = modRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build baked: %v\n%s", err, out)
+	}
+
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+
+	bakedCmd := exec.Command(bakedExe, "--no-watch")
+	bakedCmd.Dir = dir
+	if err := bakedCmd.Start(); err != nil {
+		t.Fatalf("start baked: %v", err)
+	}
+	defer bakedCmd.Process.Kill()
+
+	sockPath := filepath.Join(dir, ".bake", "baked.sock")
+	for i := 0; i < 100; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+	}
+
+	origWd, _ := os.Getwd()
+	origPath := os.Getenv("PATH")
+	os.Chdir(dir)
+	os.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+	defer func() {
+		os.Chdir(origWd)
+		os.Setenv("PATH", origPath)
+	}()
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"down"})
+	if err != nil {
+		t.Fatalf("RunMain down via daemon: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainEnsureBakefileFormatLintNoAutoLint(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target   build { desc \"b\" steps { exec [\"true\"] } }\n"
+	path := filepath.Join(dir, "Bakefile")
+	os.WriteFile(path, []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	if err := ensureBakefileFormatLint(path); err != nil {
+		t.Fatalf("ensureBakefileFormatLint (no autolint): %v", err)
+	}
+}
+
+func TestRunMainInstallInGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+suite precommit { build }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0755)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"install"})
+	if err != nil {
+		t.Fatalf("RunMain install: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainLintFixWithFindings(t *testing.T) {
+	dir := t.TempDir()
+	// Single-line cmd form triggers prefer-exec (fixable)
+	bf := "target build cmd echo hello\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"lint", "--fix"})
+	if err != nil {
+		t.Fatalf("RunMain lint --fix: %v", err)
+	}
+	// May return 0 (all fixed) or 1 (unfixable remain)
+	if code > 1 {
+		t.Errorf("expected exit 0 or 1, got %d", code)
+	}
+}
+
+func TestRunMainRunSuiteViaDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test; run on Unix")
+	}
+	dir, err := os.MkdirTemp(os.TempDir(), "bt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	modRoot := repoRoot(t)
+	bakedExe := filepath.Join(dir, "baked")
+	build := exec.Command("go", "build", "-o", bakedExe, "./cmd/baked")
+	build.Dir = modRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build baked: %v\n%s", err, out)
+	}
+
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" steps { exec ["true"] } }
+suite dev { build test }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+
+	bakedCmd := exec.Command(bakedExe, "--no-watch")
+	bakedCmd.Dir = dir
+	if err := bakedCmd.Start(); err != nil {
+		t.Fatalf("start baked: %v", err)
+	}
+	defer bakedCmd.Process.Kill()
+
+	sockPath := filepath.Join(dir, ".bake", "baked.sock")
+	for i := 0; i < 100; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+	}
+
+	origWd, _ := os.Getwd()
+	origPath := os.Getenv("PATH")
+	os.Chdir(dir)
+	os.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+	defer func() {
+		os.Chdir(origWd)
+		os.Setenv("PATH", origPath)
+	}()
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"dev"})
+	if err != nil {
+		t.Fatalf("RunMain dev via daemon: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainFormatToStdout(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"fmt"})
+	if err != nil {
+		t.Fatalf("RunMain fmt: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainDownNoDaemons(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".bake"), 0755)
+	// Write empty state
+	os.WriteFile(filepath.Join(dir, ".bake", "state.json"), []byte(`{"daemons":{}}`), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"down"})
+	if err != nil {
+		t.Fatalf("RunMain down (no daemons): %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainUpWithProfileEnvOverlay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon uses sleep; run on Unix")
+	}
+	dir := t.TempDir()
+	bf := `profile prod { env { MODE prod } }
+target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build srv }
+  daemon srv { steps { exec ["sleep", "0.2"] } }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--profile", "prod", "up"})
+	if err != nil {
+		t.Fatalf("RunMain up --profile prod: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("up: exit code %d", code)
+	}
+	code, err = RunMain([]string{"down"})
+	if err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("down: exit code %d", code)
+	}
+}
+
+func TestRunMainUpUnknownDaemonRef(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build nonexistent_daemon }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"up"})
+	if err == nil {
+		t.Fatal("expected error for unknown daemon ref")
+	}
+	if code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+}
+
+func TestRunMainDownStaleState(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".bake"), 0755)
+	// Write state with a PID that doesn't exist, exercises the warning path
+	os.WriteFile(filepath.Join(dir, ".bake", "state.json"), []byte(`{"daemons":{"old":{"pid":99999999}}}`), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"down"})
+	// The stop may fail (stale PID) but runDown should still succeed
+	if err != nil {
+		t.Fatalf("RunMain down stale: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainDownStaleSpecificDaemon(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".bake"), 0755)
+	os.WriteFile(filepath.Join(dir, ".bake", "state.json"), []byte(`{"daemons":{"old":{"pid":99999999}}}`), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"down", "old"})
+	// The PID is stale so stop will fail; down returns error
+	if err == nil {
+		t.Log("down old: no error (platform-dependent)")
+	}
+	_ = code
+}
+
+func TestRunMainDefaultUnknownProfile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--profile", "bogus"})
+	if err == nil {
+		t.Fatal("expected error for unknown profile")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainInstallShimsExplicit(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"install", "shims"})
+	if err != nil {
+		t.Fatalf("RunMain install shims: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainInstallHooksWithPrecommit(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+suite precommit { build }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	os.MkdirAll(filepath.Join(dir, ".git", "hooks"), 0755)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"install", "hooks"})
+	if err != nil {
+		t.Fatalf("RunMain install hooks: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	hookData, _ := os.ReadFile(filepath.Join(dir, ".git", "hooks", "pre-commit"))
+	if len(hookData) == 0 {
+		t.Error("pre-commit hook should have been created")
+	}
+}
+
+func TestRunMainBuildWithAutoFormatLint(t *testing.T) {
+	dir := t.TempDir()
+	bf := "target   build { desc \"b\" steps { exec [\"true\"] } }\n"
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	// Do NOT set BAKE_NO_AUTOFORMAT/BAKE_NO_AUTOLINT to exercise those paths
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"build"})
+	if err != nil {
+		t.Fatalf("RunMain build (auto fmt/lint): %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "Bakefile"))
+	if strings.Contains(string(data), "   build") {
+		t.Error("auto-format should clean extra spaces")
+	}
+}
+
+func TestRunMainDefaultWithJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--json"})
+	if err != nil {
+		t.Fatalf("RunMain --json: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainLintWithFindings(t *testing.T) {
+	dir := t.TempDir()
+	// Missing desc triggers unfixable desc-missing
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, _ := RunMain([]string{"lint"})
+	if code != 1 {
+		t.Errorf("expected exit 1 for lint findings, got %d", code)
+	}
+}
+
+func TestRunMainRunTargetJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--json", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --json build: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainWhyAlreadyBuilt(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" inputs ["*.go"] outputs ["out.bin"] steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	// Create input and output so cache shows "would skip"
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "out.bin"), []byte("binary"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	// Run build once to populate cache
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	RunMain([]string{"build"})
+	// Now --why should show "would skip"
+	code, err := RunMain([]string{"--why", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --why build: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainUpWithScheduleShortInterval(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build schedule interval "50ms" }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := runUp(ctx, nil, "", false)
+	if err != nil {
+		t.Fatalf("runUp with short interval: %v", err)
+	}
+}
+
+func TestRunMainInstallCreatesNewBakefile(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"install"})
+	if err != nil {
+		t.Fatalf("RunMain install (new): %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Bakefile")); err != nil {
+		t.Errorf("Bakefile should have been created: %v", err)
+	}
+}
+
+func TestRunMainRunTargetWithDeps(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" deps build steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"test"})
+	if err != nil {
+		t.Fatalf("RunMain test: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainExplainUnknownTarget(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--explain", "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainWatchWithInputs(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" inputs ["*.go"] steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	// Modify the file mid-watch to trigger the poll callback
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n// changed\n"), 0644)
+	}()
+	err := runWatch(ctx, "build", nil, nil, nil, "", false, 1)
+	if err != nil {
+		t.Fatalf("runWatch: %v", err)
+	}
+}
+
+func TestRunMainWatchUnknownTarget(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--watch", "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainWatchWithProfile(t *testing.T) {
+	dir := t.TempDir()
+	bf := `profile prod { env { MODE prod } }
+target build { desc "b" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--watch", "--profile", "prod", "build"})
+	if err != nil {
+		t.Fatalf("RunMain --watch --profile prod build: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainLintJSONFindings(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, _ := RunMain([]string{"lint", "--json"})
+	if code != 1 {
+		t.Errorf("expected exit 1 for lint findings, got %d", code)
+	}
+}
+
+func TestRunMainDownContainerInState(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".bake"), 0755)
+	// Simulate a container daemon entry in state
+	os.WriteFile(filepath.Join(dir, ".bake", "state.json"), []byte(`{"daemons":{"mydb":{"pid":0,"container_id":"abc123def456"}}}`), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	// Will fail to stop container (no docker), but exercises the container path
+	code, _ := RunMain([]string{"down"})
+	_ = code // we just want to exercise the code path
+}
+
+func TestRunMainGraphDotWithEdges(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" deps build steps { exec ["true"] } }
+target lint { desc "l" deps build steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--graph", "dot"})
+	if err != nil {
+		t.Fatalf("RunMain --graph dot: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainGraphUnknownTarget(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"--graph", "dot", "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainRunDryRunTarget(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build { desc "b" steps { exec ["true"] } }
+target test { desc "t" deps build steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--dry-run", "test"})
+	if err != nil {
+		t.Fatalf("RunMain --dry-run test: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainUpNoWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target up { desc "u" steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"up"})
+	if err == nil {
+		t.Fatal("expected error for up with no workflow")
+	}
+	if code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+}
+
+func TestRunMainWatchWithPreset(t *testing.T) {
+	dir := t.TempDir()
+	bf := `target build {
+  desc "b"
+  preset fast { argv ["true"] }
+  steps { exec ["true"] }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--watch", "build", "fast"})
+	if err != nil {
+		t.Fatalf("RunMain --watch build fast: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+}
+
+func TestRunMainInstallHooksNoPrecommit(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	os.MkdirAll(filepath.Join(dir, ".git"), 0755)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	code, err := RunMain([]string{"install", "hooks"})
+	if err == nil {
+		t.Fatal("expected error (no precommit suite)")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestRunMainUpScheduleCronWithProfile(t *testing.T) {
+	dir := t.TempDir()
+	bf := `profile prod { env { MODE prod } }
+target build { desc "b" steps { exec ["true"] } }
+target up {
+  workflow { build schedule cron "* * * * *" }
+}
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := runUp(ctx, nil, "prod", false)
+	if err != nil {
+		t.Fatalf("runUp with cron+profile: %v", err)
+	}
+}
+
+func TestRunMainWatchUnknownProfile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { desc \"b\" steps { exec [\"true\"] } }\n"), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	t.Setenv("BAKE_NO_AUTOFORMAT", "1")
+	t.Setenv("BAKE_NO_AUTOLINT", "1")
+	t.Setenv("BAKE_NO_DAEMON", "1")
+	code, err := RunMain([]string{"--watch", "--profile", "bogus", "build"})
+	if err == nil {
+		t.Fatal("expected error for unknown profile")
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
 	}
 }
 

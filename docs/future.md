@@ -64,19 +64,38 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 - [x] **Daemon container scope** — When a daemon has **image**, start it as a container (track container ID in state); **bake down** stops/removes the container. Host daemons (exec/cmd, no image) keep current PID-based lifecycle. Daemon blocks support **net** / **vol** like targets.
 - [x] **--version** — **`bake --version`** prints the release version; set at build time via `-ldflags "-X main.Version=..."` (e.g. in the Homebrew formula).
 
-## v1.7 — Agent block and agentic
+## v1.7 — baked (background daemon) (done)
 
-- [ ] **agent block** — Inside workflow (e.g. inside target up); defines agentic semantics. Steps run before agent; all run on schedule. Scope to expand (allowlist, capability, schema).
-- [ ] **Agentic** — `bake plan --json`, allowlist, one approval per target.
+- [x] **baked** — Background daemon: target lifecycles, containers, error/recovery, caching, shim updates. Run-once semantics; watches Bakefile(s), integrates on disk updates. Queueing and prioritization; Bakefile format checks. Big lift.
+- [x] **baked: persistent queue** — Persist run queue across baked restarts so in-flight or queued work can be resumed or replayed. Queue file at `.bake/queue.json`; at-least-once replay on startup.
+- [x] **baked: remote / TCP listener** — `--tcp <addr>` flag: listen on TCP in addition to Unix socket for remote or containerized clients. Both listeners share the same serve loop.
+- [x] **baked: multiple workspaces** — `--workspace <dir>` (repeatable): single baked instance managing multiple workspace roots. Each workspace has its own config, watcher, and queue. Requests include optional `workspace` field to target a specific workspace.
+- [x] **baked: hot reload workflow** — On Bakefile change, diff the old and new `up` target daemons; stop removed, start added, restart changed daemons automatically without `bake down` / `bake up`.
+- [x] **baked: sleep/wake and lifecycle** — Periodic health checker (30s interval) validates daemon PIDs/containers; removes stale entries. Detects long sleep (3× interval gap) and runs full check on wake.
+- [x] **baked: SIGUSR1 / SIGUSR2** — SIGUSR1 forces config reload across all workspaces; SIGUSR2 dumps status to log. Protocol also supports `reload` and `status` request fields.
 
-## v1.8 — baked (background daemon)
+## v1.8 — Namespacing and import scope
 
-- [ ] **baked** — Background daemon: target lifecycles, containers, error/recovery, caching, shim updates. Run-once semantics; watches Bakefile(s), integrates on disk updates. Queueing and prioritization; Bakefile format checks. Big lift.
+- [ ] **Import namespacing** — Prefix or namespace for targets, suites, and profiles from imported Bakefiles (e.g. qualified reference so imports don't pollute the global name space).
+- [ ] **Import scope / visibility** — Limit each Bakefile so it only has access to commands (targets, suites, profiles) defined in that file and in all Bakefiles it imports (transitively). A file cannot reference items defined in files that import it ("above" the current file). Entry point (main Bakefile) sees itself plus its import tree; an imported file's references are validated against itself plus its own imports only.
 
-## v1.9 — Namespacing and import scope
+## v1.9 — Agent block and agentic
 
-- [ ] **Import namespacing** — Prefix or namespace for targets, suites, and profiles from imported Bakefiles (e.g. qualified reference so imports don’t pollute the global name space).
-- [ ] **Import scope / visibility** — Limit each Bakefile so it only has access to commands (targets, suites, profiles) defined in that file and in all Bakefiles it imports (transitively). A file cannot reference items defined in files that import it (“above” the current file). Entry point (main Bakefile) sees itself plus its import tree; an imported file’s references are validated against itself plus its own imports only.
+- [ ] **agent block** — Describes how bake should behave when an external driver (AI, script, orchestrator) is in control. Declarative constraints and observability in the Bakefile; not "run this agent binary." Scope: allowlist, capability, schema (see design notes below).
+- [ ] **Agentic** — `bake plan --json`, allowlist enforcement, one approval per target (or per-plan). Env: `BAKE_AGENTIC`, `BAKE_APPROVED` (or equivalent).
+
+**Agentic design notes (for future evaluation / release):**
+
+- **Interpretation:** The agent is the *caller* of bake (e.g. an AI tool that runs `bake build`). The agent block does not run an agent; it defines how bake behaves when such a driver is in control: what targets are allowed, what the driver can discover, and what requires approval.
+- **Core semantics:** (1) **Allowlist** — When `BAKE_AGENTIC=1`, only targets listed in the workflow's agent allowlist may run. (2) **`bake plan --json`** — Machine-readable execution plan (order + allowlist) so the driver can discover what it's allowed to do without executing. (3) **Approval** — e.g. `BAKE_APPROVED=target1,target2`; bake only runs targets in that set when agentic, giving one-approval-per-target (or per-plan if we add approval scope).
+- **Additional semantics (candidates for v1.9 or later):**
+  - **Capability / intent level** — e.g. `read-only` (plan, explain, list only) vs `execute` (run allowlisted targets). Agentic mode can default to read-only; execution requires explicit capability or approval.
+  - **Schema in plan** — `bake plan --json` includes per-target desc, args (name, type, default), inputs/outputs, tags so the driver knows what each target does without parsing the Bakefile.
+  - **Approval scope** — Per-target (each in `BAKE_APPROVED`) vs per-plan (approve whole list once) vs per-level (approve by DAG level).
+  - **Agent-facing instructions** — Optional `instructions` or per-target hint in the agent block, emitted in plan output for the driver to show or reason about.
+  - **Audit trail** — Optional `BAKE_AGENT_AUDIT_LOG`: append NDJSON of request vs allowed/run for "what did the agent try and what did bake allow?"
+  - **Safe-by-default** — When agentic and no execute capability (or no approval), bake never runs steps; only plan/explain/list.
+  - **Max dep depth** — e.g. `agent { allowlist build test; max_deps 1 }` so the driver can't pull in long dependency chains beyond what the author intended.
 
 ---
 
@@ -101,7 +120,7 @@ Normalized use cases: [Parameterization](parameterization.md) (passthrough · ov
 
 ## Workflow, daemon, schedule (design notes)
 
-**Schedule** — Scoped for next version (v1.7). Lives **inside** the workflow block only: `workflow { steps { ... } schedule { cron "0 * * * *" } }` (syntax TBD). Means “run this workflow on a schedule.” No interaction with daemons (you don’t schedule a daemon).
+**Schedule** — Done in v1.6. Lives **inside** the workflow block: `workflow { build schedule interval "1h" }` or `schedule cron "0 * * * *"`. Re-runs workflow targets on cron or interval; daemons stay up. No interaction with daemons (you don't schedule a daemon).
 
 **Job** — Deprecated; not reserved. Single-step workflow is sufficient.
 
