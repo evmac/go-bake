@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	healthInterval   = 30 * time.Second
-	sleepThreshold   = 3 * healthInterval // if a tick takes 3x longer, we probably slept
+	healthInterval = 30 * time.Second
+	sleepThreshold = 3 * healthInterval // if a tick takes 3x longer, we probably slept
 )
 
 // HealthChecker periodically validates daemon PIDs/containers and cleans stale entries.

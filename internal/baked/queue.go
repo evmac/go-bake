@@ -13,10 +13,10 @@ import (
 
 // QueueEntry is a request persisted to disk so it survives restarts.
 type QueueEntry struct {
-	ID        string              `json:"id"`
-	Request   daemonproto.Request `json:"request"`
-	Workspace string              `json:"workspace"`
-	EnqueuedAt time.Time          `json:"enqueued_at"`
+	ID         string              `json:"id"`
+	Request    daemonproto.Request `json:"request"`
+	Workspace  string              `json:"workspace"`
+	EnqueuedAt time.Time           `json:"enqueued_at"`
 }
 
 // Queue is a persistent FIFO queue backed by a JSON file in .bake/.

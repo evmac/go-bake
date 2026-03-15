@@ -13,10 +13,10 @@ const debounceDur = 150 * time.Millisecond
 
 // Watcher watches the Bakefile (and optionally imported paths) and calls OnReload when they change.
 type Watcher struct {
-	paths   []string
-	watcher *fsnotify.Watcher
+	paths    []string
+	watcher  *fsnotify.Watcher
 	debounce *time.Timer
-	mu      sync.Mutex
+	mu       sync.Mutex
 	onReload func() (*config.File, error) // called with mu held; returns new config
 	lastCfg  *config.File
 }

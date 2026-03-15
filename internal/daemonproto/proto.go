@@ -5,10 +5,10 @@ type Request struct {
 	Run       string `json:"run,omitempty"`       // target or suite name to run
 	Up        bool   `json:"up,omitempty"`        // run workflow up
 	Down      bool   `json:"down,omitempty"`      // run down
-	Daemon    string `json:"daemon,omitempty"`     // for down: optional daemon name
-	Reload    bool   `json:"reload,omitempty"`     // force config reload
-	Status    bool   `json:"status,omitempty"`     // request daemon status dump
-	Workspace string `json:"workspace,omitempty"`  // workspace root (for multi-workspace)
+	Daemon    string `json:"daemon,omitempty"`    // for down: optional daemon name
+	Reload    bool   `json:"reload,omitempty"`    // force config reload
+	Status    bool   `json:"status,omitempty"`    // request daemon status dump
+	Workspace string `json:"workspace,omitempty"` // workspace root (for multi-workspace)
 }
 
 // Response is the result of executing a request.

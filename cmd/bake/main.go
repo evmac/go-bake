@@ -23,14 +23,14 @@ import (
 	"github.com/evmac/go-bake/internal/watch"
 
 	"github.com/evmac/go-bake/internal/config"
+	"github.com/evmac/go-bake/internal/daemonclient"
+	"github.com/evmac/go-bake/internal/daemonproto"
 	"github.com/evmac/go-bake/internal/dsl"
 	"github.com/evmac/go-bake/internal/env"
 	"github.com/evmac/go-bake/internal/lifecycle"
 	"github.com/evmac/go-bake/internal/lint"
 	"github.com/evmac/go-bake/internal/resolve"
 	"github.com/evmac/go-bake/internal/runner"
-	"github.com/evmac/go-bake/internal/daemonclient"
-	"github.com/evmac/go-bake/internal/daemonproto"
 	"github.com/evmac/go-bake/internal/shim"
 	"github.com/robfig/cron/v3"
 )
