@@ -64,10 +64,30 @@ func emitEvent(w io.Writer, e RunEvent) {
 	w.Write([]byte{'\n'})
 }
 
+// lockedWriter serializes writes to w (for --json / EventWriter when MaxParallel > 1).
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func newLockedWriter(w io.Writer) io.Writer {
+	return &lockedWriter{w: w}
+}
+
+func (lw *lockedWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.w.Write(p)
+}
+
 // Run builds the DAG, runs dependencies in order, then runs the target's steps.
 // When MaxParallel > 1, targets in the same level run concurrently (up to MaxParallel).
 func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptions) error {
 	ev := opts.EventWriter
+	if ev != nil && opts.MaxParallel > 1 {
+		// Parallel levels run multiple targets at once; emitEvent must not race on shared writers (e.g. bytes.Buffer).
+		ev = newLockedWriter(ev)
+	}
 	if ev != nil {
 		emitEvent(ev, RunEvent{Event: "run_start", Target: targetName})
 	}
@@ -151,6 +171,10 @@ func Run(ctx context.Context, cfg *config.File, targetName string, opts RunOptio
 			runOpts := opts
 			if name != targetName {
 				runOpts = RunOptions{RootDir: opts.RootDir, Dotenv: opts.Dotenv, TargetEnv: dep.Env, CLIEnv: opts.CLIEnv, EventWriter: ev, MaxParallel: opts.MaxParallel, PoolSems: opts.PoolSems, Mutexes: opts.Mutexes, NetVolRegistry: opts.NetVolRegistry}
+			} else if ev != nil && opts.EventWriter != nil && opts.MaxParallel > 1 {
+				// Final target runs alone in its level but must use the same locked writer as parallel deps.
+				runOpts = opts
+				runOpts.EventWriter = ev
 			}
 			wg.Add(1)
 			go func(n string, d *config.Target, ro RunOptions) {

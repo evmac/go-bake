@@ -2,6 +2,8 @@
 
 Ship-it praxis: human review → commit → tag → push → release via GitHub.
 
+Release notes for each version: [changelog](changelog.md).
+
 ## Prerequisites
 
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated.

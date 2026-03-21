@@ -13,7 +13,9 @@ import (
 )
 
 const dialTimeout = 2 * time.Second
-const waitForSocket = 3 * time.Second
+
+// waitForSocket must be generous for slow CI, -race, and cold start of baked.
+const waitForSocket = 10 * time.Second
 
 // SocketPath returns the baked socket path for the given root dir.
 func SocketPath(rootDir string) string {

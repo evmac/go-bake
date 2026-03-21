@@ -3,6 +3,7 @@ package baked
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +17,9 @@ func TestWatcherReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reloadCount := 0
+	var reloadCount atomic.Int32
 	w, err := NewWatcher(func() (*config.File, error) {
-		reloadCount++
+		reloadCount.Add(1)
 		_, cfg, err := Load(dir)
 		return cfg, err
 	})
@@ -43,8 +44,8 @@ func TestWatcherReload(t *testing.T) {
 	// Wait for debounce + reload
 	time.Sleep(debounceDur + 100*time.Millisecond)
 
-	if reloadCount < 1 {
-		t.Errorf("expected at least 1 reload, got %d", reloadCount)
+	if reloadCount.Load() < 1 {
+		t.Errorf("expected at least 1 reload, got %d", reloadCount.Load())
 	}
 	cfg := w.Config()
 	if cfg == nil {
@@ -60,9 +61,9 @@ func TestForceReload(t *testing.T) {
 	bakePath := filepath.Join(dir, "Bakefile")
 	os.WriteFile(bakePath, []byte("target build { steps { exec [\"true\"] } }\n"), 0644)
 
-	reloadCount := 0
+	var reloadCount atomic.Int32
 	w, err := NewWatcher(func() (*config.File, error) {
-		reloadCount++
+		reloadCount.Add(1)
 		_, cfg, err := Load(dir)
 		return cfg, err
 	})
@@ -73,7 +74,7 @@ func TestForceReload(t *testing.T) {
 
 	w.ForceReload()
 	time.Sleep(debounceDur + 100*time.Millisecond)
-	if reloadCount < 1 {
-		t.Errorf("ForceReload: expected at least 1 reload, got %d", reloadCount)
+	if reloadCount.Load() < 1 {
+		t.Errorf("ForceReload: expected at least 1 reload, got %d", reloadCount.Load())
 	}
 }

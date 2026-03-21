@@ -60,9 +60,9 @@ func TestPollOnChangeCalledWhenFileChanges(t *testing.T) {
 	select {
 	case <-onChangeCalled:
 		// onChange was called
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(1 * time.Second):
 		cancel()
-		t.Fatal("onChange was not called within 200ms after file change")
+		t.Fatal("onChange was not called within 1s after file change")
 	}
 }
 

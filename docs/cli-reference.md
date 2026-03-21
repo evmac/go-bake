@@ -14,7 +14,7 @@ bake [global-flags] [target [preset] | suite] [target-args] [--] [passthrough]
 | `--status` | With `--list`, show per-target incremental status (would run / skipped). |
 | `--ci` | Use CI suite for `--list`. |
 | `--dry-run` | Print commands and dependency order; do not run. |
-| `--show-cmd` | Print each command to stderr before running (or set `BAKE_SHOW_CMD=1`). |
+| `--show-cmd` | Print each command to stderr before running (or set `BAKE_SHOW_CMD=1`). Applies to suite runs: each step is printed (e.g. `+ gofmt -l .`, `+ go test ...`). |
 | `--set key=value` | Override env or args (e.g. `--set env.FOO=bar`, `--set args.NAME=value`); repeatable. |
 | `--profile <name>` | Use named profile (env/dotenv overlay); or set `BAKE_PROFILE`. |
 | `--choose` | Interactive menu to pick a target; without TTY prints one target per line (pipe to fzf). |
@@ -31,7 +31,7 @@ bake [global-flags] [target [preset] | suite] [target-args] [--] [passthrough]
 | `--watch` | Re-run target when inputs change (poll-based); requires a target name. |
 | `--no-daemon` | Run in-process only; do not start or connect to the **baked** daemon. |
 | `--version` | Print version and exit. |
-| `--debug` | Enable debug logging (or set `BAKE_DEBUG=1`). |
+| `--debug` | Enable debug logging (or set `BAKE_DEBUG=1`). For runs: prints which target (and preset) is running; for suites: prints suite name and entry list before running. |
 
 ## Environment (load-time)
 

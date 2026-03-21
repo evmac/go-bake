@@ -27,6 +27,9 @@ jobs:
 
       - name: Run CI suite
         run: ci
+        env:
+          GOMEMLIMIT: 1GiB
+        timeout-minutes: 15
 
       - name: Upload coverage
         if: env.ACTIONS_RUNTIME_TOKEN != ''

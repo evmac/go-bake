@@ -827,6 +827,26 @@ func TestRunMainRunSuite(t *testing.T) {
 	}
 }
 
+func TestRunMainCiFlagNoArgsRunsCiSuite(t *testing.T) {
+	// When --ci is set and no target given, run the ci suite (not the default target).
+	dir := t.TempDir()
+	bf := `target act { steps { exec ["false"] } }
+suite ci { build }
+target build { steps { exec ["true"] } }
+`
+	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte(bf), 0644)
+	orig, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(orig)
+	code, err := RunMain([]string{"--ci"})
+	if err != nil {
+		t.Fatalf("RunMain --ci: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("--ci with no args should run ci suite (build), not default target (act); got exit %d", code)
+	}
+}
+
 func TestRunMainInstall(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "Bakefile"), []byte("target build { steps { exec [\"true\"] } }\n"), 0644)

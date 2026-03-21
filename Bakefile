@@ -1,12 +1,12 @@
 suite ci {
   format.check
-  test.cover
+  test.coverage
 }
 
 suite precommit {
   build
   format
-  test.no-cache
+  test
 }
 
 target act {
@@ -54,7 +54,7 @@ target test {
   desc "run tests"
   deps build
   steps { exec ["go", "test", "./..."] }
-  preset cover {
+  preset coverage {
     desc "run tests with coverage (produces coverage.out)"
     steps { exec ["go", "test", "./...", "--count=1", "-coverprofile=coverage.out"] }
   }

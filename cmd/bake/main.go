@@ -202,10 +202,18 @@ func RunMain(args []string) (int, error) {
 		return 0, nil
 	}
 	if len(posArgs) == 0 {
-		if err := runDefault(cliEnv, cliArgs, *profileName, *showCmd, *jsonOut, *maxParallel, *timing, *artifacts); err != nil {
-			return 2, err
+		// With --ci (or CI=1), run the ci suite instead of the default target
+		if *ci || os.Getenv("CI") == "true" || os.Getenv("CI") == "1" {
+			if cfg, err := loadConfig(); err == nil && cfg.SuiteByName("ci") != nil {
+				posArgs = []string{"ci"}
+			}
 		}
-		return 0, nil
+		if len(posArgs) == 0 {
+			if err := runDefault(cliEnv, cliArgs, *profileName, *showCmd, *jsonOut, *maxParallel, *timing, *artifacts); err != nil {
+				return 2, err
+			}
+			return 0, nil
+		}
 	}
 	target := posArgs[0]
 	useDaemon := !*noDaemon && os.Getenv("BAKE_DAEMON") != "0" && os.Getenv("BAKE_NO_DAEMON") == ""
@@ -280,15 +288,27 @@ func RunMain(args []string) (int, error) {
 		}
 	}
 	if su := cfg.SuiteByName(target); su != nil {
+		fmt.Fprintf(os.Stderr, "bake: running suite %s\n", target)
+		if *debug {
+			fmt.Fprintf(os.Stderr, "bake: suite %s: %d entries (%s)\n", target, len(su.Targets), strings.Join(su.Targets, ", "))
+		}
 		for _, entry := range su.Targets {
 			targetName, presetName := config.ParseSuiteEntry(entry)
 			tgt := cfg.TargetByName(targetName)
 			if tgt == nil {
+				if *debug {
+					fmt.Fprintf(os.Stderr, "bake: skipping unknown target in suite entry %q\n", entry)
+				}
 				continue
 			}
 			var preset *config.Preset
 			if presetName != "" {
 				preset = tgt.PresetByName(presetName)
+			}
+			if presetName != "" {
+				fmt.Fprintf(os.Stderr, "bake: running target %s (preset %s)\n", targetName, presetName)
+			} else {
+				fmt.Fprintf(os.Stderr, "bake: running target %s\n", targetName)
 			}
 			declared, live, passthroughByStep, _ := resolve.ParseArgs(tgt, nil)
 			for k, v := range cliArgs {
@@ -325,6 +345,13 @@ func RunMain(args []string) (int, error) {
 	if *dryRun {
 		runDryRun(cfg, target, tgt, declared, live, passthroughByStep, cliEnv, preset)
 		return 0, nil
+	}
+	if *debug {
+		if preset != nil {
+			fmt.Fprintf(os.Stderr, "bake: running target %s (preset %s)\n", target, preset.Name)
+		} else {
+			fmt.Fprintf(os.Stderr, "bake: running target %s\n", target)
+		}
 	}
 	if err := runTarget(cfg, target, tgt, declared, live, passthroughByStep, cliEnv, profile, preset, *showCmd, *jsonOut, *maxParallel, *timing, *artifacts); err != nil {
 		return 1, err
@@ -774,12 +801,35 @@ func runDown(daemonName string) error {
 	return nil
 }
 
+// printTargetCommands writes each step command to stderr (for --show-cmd).
+func printTargetCommands(tgt *config.Target, preset *config.Preset) {
+	steps := tgt.Steps
+	if preset != nil && len(preset.Steps) > 0 {
+		steps = preset.Steps
+	}
+	for _, step := range steps {
+		argv := step.Argv
+		if len(argv) == 0 {
+			continue
+		}
+		line := strings.Join(argv, " ")
+		if step.Runner != "" {
+			fmt.Fprintf(os.Stderr, "+ %s -c %s\n", step.Runner, line)
+		} else {
+			fmt.Fprintf(os.Stderr, "+ %s\n", line)
+		}
+	}
+}
+
 func runTarget(cfg *config.File, name string, tgt *config.Target, declared, live map[string]string, passthroughByStep map[int][]string, cliEnv map[string]string, profile *config.Profile, preset *config.Preset, showCmd, jsonMode bool, maxParallel int, timing, artifacts bool) error {
 	if tgt == nil {
 		return fmt.Errorf("unknown target %q (use 'bake --list')", name)
 	}
 	if len(tgt.Steps) == 0 {
 		return nil
+	}
+	if showCmd {
+		printTargetCommands(tgt, preset)
 	}
 	if declared == nil {
 		declared = make(map[string]string)
