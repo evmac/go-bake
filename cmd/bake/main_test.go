@@ -1533,15 +1533,28 @@ func TestRunWatchReRunOnChange(t *testing.T) {
 		wg.Wait()
 		t.Fatal(err)
 	}
-	// Wait for debounce + poll + second run
-	time.Sleep(1500 * time.Millisecond)
+	runcountPath := filepath.Join(dir, "runcount.txt")
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		data, err := os.ReadFile(runcountPath)
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) >= 2 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	cancel()
 	wg.Wait()
 	if watchErr != nil {
 		t.Errorf("runWatch: %v", watchErr)
 	}
 	// Should have run at least twice (initial + after touch)
-	data, err := os.ReadFile(filepath.Join(dir, "runcount.txt"))
+	data, err := os.ReadFile(runcountPath)
 	if err != nil {
 		t.Fatalf("read runcount: %v", err)
 	}

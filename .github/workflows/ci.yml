@@ -1,4 +1,5 @@
-# Run the bake ci suite (format.check + test.cover). Uses the project's own Bakefile and suite.
+# Format check + test with coverage (same as `bake ci`), but split so we can tune timeouts.
+# Do not set GOMAXPROCS=2 here: it makes `go test ./...` many times slower on CI.
 name: CI
 
 on:
@@ -10,6 +11,7 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,19 +20,22 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "stable"
+          cache: true
 
-      - name: Set up Bake
+      - name: Smoke build bake
+        run: go build -o bin/bake ./cmd/bake
+
+      - name: Format check
         run: |
-          go build -o bin/bake ./cmd/bake
-          ./bin/bake install
-          echo "${{ github.workspace }}/.bake/bin" >> $GITHUB_PATH
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Files need formatting:"
+            gofmt -l .
+            exit 1
+          fi
 
-      # Do not set GOMEMLIMIT too low: go test ./... -coverprofile needs headroom on the runner.
-      - name: Run CI suite
-        run: ci
-        env:
-          GOMAXPROCS: 2
-        timeout-minutes: 20
+      - name: Test with coverage
+        run: go test ./... -count=1 -coverprofile=coverage.out -timeout=60m
+        timeout-minutes: 90
 
       - name: Upload coverage
         if: env.ACTIONS_RUNTIME_TOKEN != ''

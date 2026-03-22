@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.3 — 2026-03-21
+
+### Fixed
+
+- **CI** — `GOMAXPROCS=2` made `go test ./...` so slow that runs could exceed the job timeout (~46+ minutes). CI now runs the same checks as `bake ci` as two steps: **format** (`gofmt -l`) and **test** (`go test` with coverage), with no `GOMAXPROCS` cap, 90-minute test step budget, 120-minute job budget, and Go module cache enabled.
+- **tests** — `TestRunWatchReRunOnChange` polls `runcount.txt` until two runs or a 15s deadline instead of a fixed sleep (fewer flakes on slow CI).
+
 ## v1.7.2 — 2026-03-21
 
 ### Fixed
