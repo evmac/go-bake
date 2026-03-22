@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.2 — 2026-03-21
+
+### Fixed
+
+- **CI (GitHub Actions)** — Removed `GOMEMLIMIT=1GiB` (too tight for `go test ./...` with coverage; led to exit **143** / SIGTERM on runners). Use `GOMAXPROCS=2` and a 20-minute step timeout instead.
+- **Homebrew tap** — Release workflow now copies `packaging/homebrew-bake.rb` in full each time, so `Formula/bake.rb` cannot accumulate merge-conflict markers from partial `sed` edits.
+
 ## v1.7.1 — 2026-03-14
 
 Patch release: race-safety, CI reliability, and CLI ergonomics.

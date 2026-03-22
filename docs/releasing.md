@@ -4,6 +4,8 @@ Ship-it praxis: human review → commit → tag → push → release via GitHub.
 
 Release notes for each version: [changelog](changelog.md).
 
+The Homebrew formula source lives at [`packaging/homebrew-bake.rb`](../packaging/homebrew-bake.rb); the **Update Homebrew tap** workflow copies it on each release so the tap stays conflict-free.
+
 ## Prerequisites
 
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated.
